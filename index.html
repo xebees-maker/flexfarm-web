@@ -257,7 +257,15 @@
   <input id="rmUrl" type="text" data-w-ph="RM_BROKER" autocapitalize="off" autocorrect="off" spellcheck="false">
   <input id="rmSite" type="text" data-w-ph="RM_SITE" autocapitalize="off" autocorrect="off" spellcheck="false">
   <input id="rmUser" type="text" name="username" autocomplete="username" data-w-ph="RM_USER" autocapitalize="off" autocorrect="off" spellcheck="false">
-  <input id="rmPw" type="password" name="password" autocomplete="current-password" data-w-ph="PASSWORD">
+  <div class="pwwrap">
+    <input id="rmPw" type="password" name="password" autocomplete="current-password" data-w-ph="PASSWORD">
+    <button id="rmPwEye" type="button" class="eye" aria-label="show password">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/>
+        <line id="rmPwEyeSlash" x1="3" y1="21" x2="21" y2="3"/>
+      </svg>
+    </button>
+  </div>
   <button type="submit" class="primary" data-w="RM_CONNECT"></button>
   <div id="rmMsg" class="msg"></div>
 </form>
@@ -338,7 +346,9 @@
     NOT_PUSHED: ['보내지 않음(꺼진 종류)', 'Not sent (type off)'], NO_ALARMS: ['알림이 없습니다', 'No notifications'],
     RM_SETUP: ['원격 접속', 'Remote access'], RM_BROKER: ['브로커 주소(wss://...)', 'Broker URL (wss://...)'], RM_SITE: ['현장 이름', 'Site name'],
     RM_USER: ['사용자', 'User'], RM_CONNECT: ['연결', 'Connect'], RM_FAILED: ['브로커에 연결하지 못했습니다', 'Could not connect to the broker'],
-    RM_READONLY: ['원격 접속에서는 볼 수만 있습니다', 'Remote access is view-only']
+    RM_READONLY: ['원격 접속에서는 볼 수만 있습니다', 'Remote access is view-only'],
+    RM_NO_BROKER: ['브로커에 연결되지 않음', 'Broker not reachable'], RM_NO_SITE: ['이 현장 이름의 제어기가 없음', 'No CNTL with this site name'],
+    RM_CNTL_OFF: ['제어기가 브로커에 연결되어 있지 않음', 'CNTL is not connected to the broker'], RM_NO_REPLY: ['제어기 응답 없음', 'No reply from CNTL']
   };
   /* 센서 채널 종류(esp_now_link.h SENSOR_CHAN_*) → 콘 주화면과 같은 글자·단위 */
   var CHAN = { 1: ['T', 'STR_CHAN_UNIT_TEMP_C'], 2: ['H', 'STR_CHAN_UNIT_HUMI_PCT'], 3: ['C', 'STR_CHAN_UNIT_CO2_PPM'], 4: ['A', 'STR_CHAN_UNIT_NH3_PPM'] };
@@ -429,11 +439,12 @@
   }
   function tunOpen(c) {
     var cid = ('0000000' + Math.floor(Math.random() * 0xffffffff).toString(16)).slice(-8);
-    var t = { pend: {}, seq: 0, ok: false, waiters: [], reqT: 'ff/' + c.site + '/req/' + cid, resT: 'ff/' + c.site + '/res/' + cid };
+    var t = { pend: {}, seq: 0, ok: false, waiters: [], reqT: 'ff/' + c.site + '/req/' + cid, resT: 'ff/' + c.site + '/res/' + cid,
+             stT: 'ff/' + c.site + '/status', status: '' };
     t.cli = mqtt.connect(c.url, { username: c.user, password: c.pass, clientId: 'ffw-' + cid, clean: true, protocolVersion: 4,
                                   reconnectPeriod: 3000, connectTimeout: 10000 });
     t.cli.on('connect', function () {
-      t.cli.subscribe(t.resT, { qos: 1 }, function (err) {
+      t.cli.subscribe([t.resT, t.stT], { qos: 1 }, function (err) {
         if (err) return;
         t.ok = true;
         var ws = t.waiters; t.waiters = [];
@@ -448,7 +459,11 @@
         $('rmMsg').textContent = Wt('RM_FAILED');
       }
     });
-    t.cli.on('message', function (topic, m) { tunMsg(t, m); });
+    /* 콘 상태(콘이 남긴 retained "online", 끊기면 브로커가 "offline") — 응답이 없을 때 이유를 보여 주려고. 없으면 그 현장 이름의 콘이 없음 */
+    t.cli.on('message', function (topic, m) {
+      if (topic === t.stT) { t.status = new TextDecoder().decode(m); return; }
+      tunMsg(t, m);
+    });
     return t;
   }
   function tunReady(t, ms) {
@@ -512,7 +527,19 @@
       });
     });
   }
+  /* 원격에서 요청이 실패한 이유(연결 표시 글자) — 브로커 / 현장 이름 / 콘 꺼짐 / 콘 응답 없음 */
+  function rmWhy(e) {
+    if (!REMOTE || !e || !e.message) return Wt('OFFLINE');
+    if (e.message === 'broker') return Wt('RM_NO_BROKER');
+    if (e.message !== 'timeout' || !tun) return Wt('OFFLINE');
+    return Wt(!tun.status ? 'RM_NO_SITE' : tun.status === 'offline' ? 'RM_CNTL_OFF' : 'RM_NO_REPLY');
+  }
   if (REMOTE) {
+    $('rmPwEye').addEventListener('click', function () {
+      var shown = $('rmPw').type === 'password';
+      $('rmPw').type = shown ? 'text' : 'password';
+      $('rmPwEyeSlash').style.display = shown ? 'none' : '';
+    });
     $('remoteView').addEventListener('submit', function (ev) {
       ev.preventDefault();
       $('rmMsg').textContent = '';
@@ -968,8 +995,9 @@
       })
       .catch(function (e) {
         if (e && e.handled) return;
-        $('conn').textContent = Wt('OFFLINE');
+        $('conn').textContent = rmWhy(e);
         $('conn').className = 'bad';
+        if (REMOTE && view !== 'main') show('main');   /* 원격 — 틀만 있는 빈 화면 대신 주화면과 이유를 보여 줌 */
         schedule();
       });
   }
