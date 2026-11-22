@@ -1,0 +1,2544 @@
+<!doctype html>
+<!--
+  2026-10-03(할 일 AD) — 콘 웹앱(SPA). 콘 = 모델 + JSON API, 이 페이지 = 화면.
+  설계(Docs 한일 AD):
+  - 콘과 같은 UI. 세로 휴대폰 배치 기준(판넬을 콘 순서대로 쌓음), 가로는 넓은 화면에서 2열.
+  - 요청은 전부 상대 경로(중계 서비스가 경로 접두어를 붙여도 동작). 실시간 갱신은 주기 조회가 기본.
+  - API는 코드만 주고 문구는 여기서 한/영으로. 콘 문구 표(ui_strings.c)는 build_web.py가 아래 STRINGS 자리에 통째로 넣음
+    (키 = 콘 STR_ 이름, 값 = [한, 영]). 웹 전용 문구는 W 표. 언어는 브라우저(localStorage)에 저장.
+  - 로그인: 401이면 로그인 화면. 성공하면 콘이 1년짜리 토큰 쿠키를 줌. 아이디 칸은 휴대폰 비밀번호 관리자용 고정값.
+  - 웹 세션: 화면 API가 409 {"error":"local"}이면 콘에서 넘겨받은 것 — "다시 연결"로 바로 가져옴.
+  - 웹에서 뺀 것(사용자 결정): 화면 끄기, 네트워크 조작(상태 표시만), Summary의 Web 주소, 웹 접속 QR, Wi-Fi 팝업.
+  빌드·배포: python build_web.py → out/app.html.gz → /admin/upload?file=app.html.gz
+-->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<!-- 10-03 — iPhone이 확대(VW 366)된 채 남고 좌우 이동을 막은 뒤엔 되돌릴 수도 없었음 → 배율 1로 고정 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>FlexFarm</title>
+<!-- 10-05(사용자 요청) — 홈 화면에 추가해 열면 브라우저 상·하단 없이 앱처럼(standalone). 탭 안에서는 페이지가 막대를 숨길 방법이 없음 -->
+<link rel="manifest" href="app.webmanifest">
+<link rel="apple-touch-icon" href="app_icon.png">
+<link rel="icon" href="app_icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="FlexFarm">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#ffffff">
+<style>
+  :root { --bg:#e5e7eb; --card:#fff; --text:#1c1e21; --muted:#6b7280; --line:rgba(127,127,127,.18);
+          --green:#16a34a; --blue:#2563eb; --red:#dc2626; --amber:#f5b400; --grey:#9ca3af; --bar:#d1d5db; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --card:#1b1e24; --text:#e5e7eb; --muted:#9ca3af; --bar:#374151; } }
+  * { box-sizing:border-box; }
+  /* 휴대폰 폭에 맞춤(10-03 — iPhone 13 Pro에서 좌우로 밀렸음): 항목이 줄어들고 긴 글자는 줄바꿈, 그래도 넘치면 페이지가 밀리지 않게 */
+  html, body { max-width:100%; overflow-x:hidden; }
+  /* 10-03(사용자 지시) — 좌우 스와이프로 화면이 움직이며 VW가 366이 됨 → 세로 스크롤만 허용, 좌우 튕김도 끔.
+   * 두 손가락 확대도 같이 막힘 — 사진 전체 화면 보기는 그 화면에서만 따로 허용할 것 */
+  html, body { touch-action:pan-y; overscroll-behavior-x:none; }
+  /* 앱처럼 열면(viewport-fit=cover) 가로일 때 노치 쪽·아래 홈 막대 자리를 비움 — 브라우저 탭에선 0 */
+  body { padding-left:env(safe-area-inset-left); padding-right:env(safe-area-inset-right); padding-bottom:env(safe-area-inset-bottom); }
+  .sheet { padding-left:env(safe-area-inset-left); padding-right:env(safe-area-inset-right); padding-bottom:env(safe-area-inset-bottom); }
+  body { margin:0; font:15px/1.4 -apple-system, system-ui, sans-serif; background:var(--bg); color:var(--text);
+         -webkit-text-size-adjust:100%; }
+  header { position:sticky; top:0; z-index:5; display:flex; align-items:center; justify-content:space-between; gap:8px;
+           padding:10px 12px; background:var(--card); border-bottom:1px solid var(--line); }
+  header h1 { font-size:20px; margin:0; font-weight:700; white-space:nowrap; flex-shrink:0; }
+  .hright { display:flex; align-items:center; gap:6px; min-width:0; }
+  .inv { background:#4b5563; color:#fff; padding:3px 8px; font-size:13px; font-variant-numeric:tabular-nums; flex-shrink:0;
+         overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #net { max-width:110px; flex-shrink:1; min-width:0; }
+  /* 10-05(사용자 지시) — 누를 수 없는 정보라 역상이 아닌 흐린 글자(역상은 버튼처럼 보였음) */
+  .netinfo { font-size:13px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sicon { width:22px; height:22px; display:inline-flex; align-items:center; justify-content:center; }
+  #conn { font-size:12px; color:var(--muted); text-align:center; padding:4px 0 0; min-height:20px; }
+  #conn.bad { color:var(--red); }
+  main { padding:6px 8px 24px; max-width:1100px; margin:0 auto; display:grid; grid-template-columns:1fr; gap:8px; }
+  @media (orientation: landscape) and (min-width: 700px) { main { grid-template-columns:1fr 1fr; } }
+  section { background:var(--card); border-radius:10px; padding:10px 12px; min-width:0; overflow-wrap:anywhere; }
+  section h2 { font-size:15px; margin:0 0 6px; font-weight:700; }
+  .row { display:flex; align-items:center; gap:8px; padding:9px 0; border-top:1px solid var(--line); }
+  .row:first-child { border-top:none; }
+  .grow { flex:1; min-width:0; }
+  .sub { font-size:13px; color:var(--muted); }
+  .val { font-size:14px; font-variant-numeric:tabular-nums; }
+  .empty { color:var(--muted); font-size:14px; padding:6px 0; }
+  .chev { color:var(--muted); }
+  h2.tap::after { content:" >"; color:var(--muted); }   /* 10-15(사용자 지시) — 누르면 팝업이 열리는 판넬 제목(콘은 역상으로 보임) */
+  .sig { display:inline-flex; align-items:flex-end; gap:2px; height:16px; }
+  .sig i { display:block; width:4px; background:var(--bar); border-radius:1px; }
+  .pw { font-size:20px; line-height:1; }
+  .red { color:var(--red); }
+  button { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid rgba(127,127,127,.4); background:transparent; color:var(--text); }
+  button.primary { background:var(--blue); border-color:var(--blue); color:#fff; }
+  button.green { background:var(--green); border-color:var(--green); color:#fff; }   /* 10-05 — 잠든 캠 지금 촬영(깨어나면) */
+  .small { font-size:13px; padding:3px 8px; }
+  .center { display:flex; flex-direction:column; align-items:center; gap:14px; padding:48px 16px; text-align:center; }
+  input { font:inherit; padding:10px 12px; border-radius:8px; border:1px solid rgba(127,127,127,.4); background:var(--card); color:var(--text); width:240px; }
+  .pwwrap { position:relative; }
+  .pwwrap input { padding-right:44px; }
+  .eye { position:absolute; right:4px; top:50%; transform:translateY(-50%); border:none; padding:6px; color:var(--muted); line-height:0; }
+  .msg { font-size:13px; color:var(--red); min-height:18px; }
+  .hidden { display:none !important; }
+  /* 팝업 = 전체 화면 시트(콘 규칙: 닫기는 오른쪽 위 X, 선택지는 아래 버튼) */
+  .sheet { position:fixed; inset:0; z-index:20; background:var(--bg); overflow-y:auto; -webkit-overflow-scrolling:touch;
+           overflow-x:hidden; touch-action:pan-y; overscroll-behavior:contain; }   /* 10-03 — 팝업도 세로만(자체 스크롤 영역이라 따로) */
+  /* 10-05(사용자 결정) — 팝업은 가로·세로 모두 전체 화면 */
+  .sbody { background:var(--card); min-height:100%; }
+  .shead { position:sticky; top:0; display:flex; align-items:center; justify-content:space-between; padding:12px 14px;
+           background:var(--card); border-bottom:1px solid var(--line); }
+  .shead h3 { margin:0; font-size:17px; }
+  .xbtn { border:none; font-size:22px; line-height:1; padding:4px 8px; }
+  .field { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; padding:12px 14px; border-bottom:1px solid var(--line); }
+  .field select { max-width:100%; }
+  .field label { flex:1; }
+  .field input[type=text] { width:auto; flex:1; min-width:0; }
+  /* iPhone Safari는 16px 미만 입력칸을 누르면 화면을 확대하고 그대로 남겨 둠(10-03 실기: VW 366, 좌우 이동) → 입력칸은 16px */
+  input, select, textarea { font-size:16px !important; }
+  select { font:inherit; padding:8px; border-radius:8px; border:1px solid rgba(127,127,127,.4); background:var(--card); color:var(--text); }
+  .tg { position:relative; width:46px; height:28px; flex:0 0 46px !important; }
+  button:disabled { opacity:.4; }
+  .tg input { opacity:0; width:0; height:0; }
+  .tg span { position:absolute; inset:0; background:var(--bar); border-radius:14px; transition:.15s; }
+  .tg span:before { content:''; position:absolute; width:22px; height:22px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.15s; }
+  .tg input:checked + span { background:var(--blue); }
+  .tg input:checked + span:before { transform:translateX(18px); }
+  .sfoot { padding:16px 14px; display:flex; justify-content:flex-end; gap:10px; }
+  .danger { color:var(--red); border-color:var(--red); }
+  .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); z-index:30; background:#111827; color:#fff; padding:8px 14px;
+           border-radius:8px; font-size:14px; max-width:90vw; }
+  /* 10-05(사용자 지시) — 새 알림 토스트는 화면 가운데, 다른 배경색 */
+  .toast.alarm { top:50%; bottom:auto; transform:translate(-50%,-50%); background:var(--blue); font-size:15px; padding:14px 18px; text-align:center; width:max-content; max-width:86vw;
+                 box-shadow:0 4px 16px rgba(0,0,0,.3); }
+  .tap { cursor:pointer; }
+  .sent { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:12px 14px; border-bottom:1px solid var(--line); }
+  .sent input[type=number] { width:90px; }
+  /* 값 버튼 + 롤러(콘 open_value_roller_popup과 같은 열 나눔) — 기본 스크롤 + 칸 맞춤이라 관성은 휴대폰 스크롤 그대로 */
+  .vbtn { min-width:64px; padding:8px 10px; font-variant-numeric:tabular-nums; }
+  .roll { position:relative; display:flex; justify-content:center; align-items:center; gap:2px; padding:8px 14px; }
+  .roll .band { position:absolute; left:14px; right:14px; top:50%; height:44px; margin-top:-22px; pointer-events:none;
+                border-top:1px solid var(--line); border-bottom:1px solid var(--line); background:rgba(127,127,127,.08); }
+  .rcol { height:220px; width:56px; overflow-y:scroll; scroll-snap-type:y mandatory; -webkit-overflow-scrolling:touch;
+          scrollbar-width:none; touch-action:pan-y; overscroll-behavior:contain; }
+  .rcol::-webkit-scrollbar { display:none; }
+  .rcol .sp { height:88px; }
+  .rcol .it { height:44px; line-height:44px; text-align:center; font-size:24px; scroll-snap-align:center; opacity:.35;
+              font-variant-numeric:tabular-nums; }
+  .rcol .it.on { opacity:1; font-weight:600; }
+  .rfix { font-size:24px; }
+  .grayp { background:rgba(127,127,127,.08); }
+  .grayp.off { opacity:.45; pointer-events:none; }
+  .modal { position:fixed; inset:0; z-index:40; background:rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; padding:16px;
+           touch-action:pan-y; overflow-x:hidden; }
+  .mbox { background:var(--card); border-radius:12px; width:100%; max-width:380px; overflow:hidden; }
+  .mtitle { padding:10px 14px; font-weight:700; background:var(--amber); color:#111; }
+  .mtext { padding:14px; }
+  .choice { padding:6px 14px; border-radius:8px; border:2px solid transparent; }
+  .sent > .grow { flex:1; }   /* 10-03(사용자 지시) — 조건 줄: 라벨이 남는 폭을 차지해 칸들이 오른쪽으로 */
+  .sent { justify-content:flex-end; }
+  /* 카메라 팝업 */
+  .btnrow { display:flex; flex-wrap:wrap; gap:8px; padding:12px 14px; border-bottom:1px solid var(--line); }
+  .prev { padding:12px 14px; border-bottom:1px solid var(--line); text-align:center; }
+  /* 10-05(사용자 지시) — 카메라 맨 위 줄: 캠 선택 왼쪽, 버튼들 오른쪽. 버튼은 위아래 여백 조금, 좌우 여백 많이 줄임 */
+  .camtop { align-items:center; justify-content:flex-end; gap:5px; flex-wrap:nowrap; }   /* 10-05 — 줄바꿈 안 함(아이폰 글꼴이 넓어 넘쳤음) */
+  .camtop select { margin-right:auto; width:calc(5em + 36px); flex:0 1 auto; min-width:64px; }   /* 모자라면 이 칸이 줄어듦 */   /* 10-05(사용자 지시) — 고정 폭, 넘치는 이름은 fitSelect가 …으로 */
+  .camtop button { padding:6px 7px; white-space:nowrap; flex:0 0 auto; }
+  .prev img { max-width:100%; max-height:45vh; border-radius:6px; cursor:zoom-in; }
+  /* 10-05(사용자 지시) — 목록이 길어 페이지가 늘어짐 → 팝업 높이 안에서 위쪽(선택·버튼·미리보기)은 고정, 목록만 스크롤.
+   * 세로 = 미리보기 아래 목록, 가로 = 왼쪽 목록 | 오른쪽 미리보기(콘과 같음) */
+  .sbody.cam { height:100%; min-height:0; display:flex; flex-direction:column; }
+  .camsplit { flex:1; min-height:0; display:flex; flex-direction:column; }
+  .camlist { flex:1; min-height:0; display:flex; flex-direction:column; }
+  .plist { flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; touch-action:pan-y; }
+  .camlist .pager { border-top:1px solid var(--line); padding:8px 14px; }
+  .prev img { max-height:38vh; }
+  @media (orientation: landscape) {
+    .camsplit { flex-direction:row; }
+    .camsplit > .prev { flex:1; min-width:0; min-height:0; border-bottom:none; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+    .camsplit > .prev img { flex:0 1 auto; min-height:0; max-height:100%; object-fit:contain; }
+    /* 10-05(사용자 지시) — 콘처럼 왼쪽 목록 | 오른쪽 사진 */
+    .camsplit > .prev { order:2; }
+    .camlist { order:1; flex:1; min-width:0; border-right:1px solid var(--line); }
+  }
+  .prow { display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
+  .prow.sel { background:rgba(37,99,235,.15); }
+  .prow .grow { font-size:14px; }
+  .pager { display:flex; justify-content:center; align-items:center; gap:6px; padding:12px 14px; }
+  /* 오래 걸리는 작업 오버레이(10-03 사용자 요청): 진행률(%)과 경과 시간 */
+  .busy { position:fixed; inset:0; z-index:60; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; }
+  .busy .bbox { background:var(--card); border-radius:12px; padding:18px 22px; min-width:220px; text-align:center; }
+  .busy .bar { height:6px; background:var(--bar); border-radius:3px; margin-top:12px; overflow:hidden; }
+  .busy .bar i { display:block; height:100%; width:0; background:var(--blue); }
+  .busy .btxt { font-variant-numeric:tabular-nums; }
+  .viewer { position:fixed; inset:0; z-index:50; background:#000; overflow:hidden; touch-action:none; }
+  .viewer img { position:absolute; left:50%; top:50%; max-width:100vw; max-height:100vh; transform-origin:center center; user-select:none; -webkit-user-drag:none; }
+  .viewer .vx { position:absolute; top:10px; right:10px; z-index:2; color:#fff; border:none; font-size:26px; background:rgba(0,0,0,.4); }
+  .choice.sel { border-color:var(--blue); }
+  /* 알림(5단계): 종 버튼 + 안 본 개수, 새 알림 배너, 알림 기록 */
+  #alarmBtn { position:relative; padding:3px 6px; line-height:0; }
+  #alarmCnt { position:absolute; top:-6px; right:-6px; min-width:17px; height:17px; padding:0 4px; border-radius:9px; background:var(--red);
+              color:#fff; font-size:11px; line-height:17px; text-align:center; font-variant-numeric:tabular-nums; }
+  .arow { padding:10px 14px; border-bottom:1px solid var(--line); font-size:14px; overflow-wrap:anywhere; }
+  .arow.unread { font-weight:700; background:rgba(37,99,235,.08); }
+  .arow .sub { font-weight:400; }
+  /* 설정 팝업 */
+  .gtitle { padding:16px 14px 6px; font-size:13px; font-weight:700; color:var(--muted); border-bottom:1px solid var(--line); }
+  .gsub { padding:12px 14px 4px 26px; font-size:12px; font-weight:600; color:var(--muted); border-bottom:1px solid var(--line); }
+  .seg button { padding:6px 12px; }
+  .seg button.on { background:var(--blue); border-color:var(--blue); color:#fff; }
+  .help { padding:0 14px 10px; font-size:13px; color:var(--muted); border-bottom:1px solid var(--line); }
+  .field.nb { border-bottom:none; }
+  .shead { z-index:3; }   /* 스크롤하면 토글(.tg, position:relative)이 제목줄 위로 올라오던 것 */
+  .field .ctl { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px; }
+  .field input[type=text], .field input[type=password] { width:100%; }
+  .tg input:disabled + span { opacity:.45; }
+  .logbox { margin:0 14px 10px; padding:8px; height:34vh; overflow:auto; background:rgba(127,127,127,.08); border-radius:6px;
+            font:12px/1.35 ui-monospace, Menlo, Consolas, monospace; white-space:pre-wrap; overflow-wrap:anywhere; touch-action:pan-y; overscroll-behavior:contain; }
+  .lvl { display:inline-flex; align-items:center; gap:3px; }
+  .lvl input { width:18px; height:18px; }
+  #setBtn { padding:3px 6px; line-height:0; }
+  /* 통계 팝업 */
+  .ovgrid { display:grid; grid-template-columns:1fr; padding:4px 0 8px; border-bottom:1px solid var(--line); }
+  @media (min-width: 700px) { .ovgrid { grid-template-columns:1fr 1fr; } }
+  .ovrow { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:5px 14px; font-size:14px; font-variant-numeric:tabular-nums; }
+  .badge { background:var(--text); color:var(--card); padding:2px 6px; border-radius:4px; }
+  .grp { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:10px 14px 4px; }
+  .grp button.on { background:var(--blue); border-color:var(--blue); color:#fff; }
+  .slots { display:flex; flex-wrap:wrap; gap:4px 14px; padding:6px 14px; font-size:14px; }
+  .slot { display:inline-flex; align-items:center; gap:6px; }
+  .slot i { display:inline-block; width:12px; height:12px; border-radius:2px; }   /* 2026-11-14 — legend(누르지 않음), 콘과 같음 */
+  .gseg { display:inline-flex; gap:4px; margin-right:16px; }                      /* 2026-11-14 — 그래프 1단 단계 덩어리(콘과 같음) */
+  .gseg button { border-radius:0; min-width:44px; }
+  .mmrow { display:flex; flex-wrap:wrap; gap:2px 12px; padding:0 14px; min-height:18px; font-size:12px; font-variant-numeric:tabular-nums; }
+  .chartwrap { position:relative; margin:2px 14px; }
+  #stChart { display:block; width:100%; height:240px; touch-action:pan-y; }
+  .tip { position:absolute; background:#fef9c3; color:#111; padding:2px 6px; border-radius:4px; font-size:13px; white-space:nowrap; pointer-events:none; }
+  .xax { position:relative; height:20px; margin:0 20px 10px; font-size:12px; color:var(--muted); }
+  .xax span { position:absolute; top:2px; transform:translateX(-50%); white-space:nowrap; }
+  .rtable { width:100%; border-collapse:collapse; table-layout:fixed; font-size:14px; font-variant-numeric:tabular-nums; }
+  .rtable th, .rtable td { padding:7px 8px; border-bottom:1px solid var(--line); text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rtable th:first-child, .rtable td:first-child { padding-left:14px; width:46%; }
+  .rtable.two th:first-child, .rtable.two td:first-child { width:22%; }
+  .rtable.two th:nth-child(4), .rtable.two td:nth-child(4) { width:22%; padding-left:14px; }
+  .rtable.two th:nth-child(3), .rtable.two td.rsep:nth-child(3) { border-right:1px solid var(--line); }
+  .tap:active { background:rgba(127,127,127,.12); }
+</style>
+</head>
+<body>
+<header>
+  <h1 data-s="STR_LOGO_TITLE"></h1>
+  <div class="hright">
+    <span id="net" class="netinfo"></span>
+    <span id="sicon" class="sicon tap" role="button" aria-label="status"></span>
+    <button id="alarmBtn" class="small" aria-label="notifications"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg><span id="alarmCnt" class="hidden"></span></button>
+    <button id="setBtn" class="small" aria-label="settings"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+  </div>
+</header>
+
+<!-- 로그인 -->
+<form id="loginView" class="center hidden" autocomplete="on">
+  <input type="text" name="username" autocomplete="username" value="cntl" class="hidden" readonly>
+  <div class="pwwrap">
+    <input id="pw" type="password" name="password" autocomplete="current-password" data-w-ph="PASSWORD">
+    <button id="pwEye" type="button" class="eye" aria-label="show password">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/>
+        <line id="pwEyeSlash" x1="3" y1="21" x2="21" y2="3"/>
+      </svg>
+    </button>
+  </div>
+  <button type="submit" class="primary" data-w="LOGIN"></button>
+  <div id="loginMsg" class="msg"></div>
+</form>
+
+<!-- 2026-11-22(3단계 읽기 터널) — 밖(정적 호스팅)에서 연 웹앱만: 브로커 접속 정보. 브라우저(localStorage)에 저장 -->
+<form id="remoteView" class="center hidden" autocomplete="on">
+  <div data-w="RM_SETUP"></div>
+  <input id="rmUrl" type="text" data-w-ph="RM_BROKER" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <input id="rmSite" type="text" data-w-ph="RM_SITE" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <input id="rmUser" type="text" name="username" autocomplete="username" data-w-ph="RM_USER" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <input id="rmPw" type="password" name="password" autocomplete="current-password" data-w-ph="PASSWORD">
+  <button type="submit" class="primary" data-w="RM_CONNECT"></button>
+  <div id="rmMsg" class="msg"></div>
+</form>
+
+<!-- 콘에서 넘겨받음 -->
+<div id="localView" class="center hidden">
+  <div data-w="LOCAL_IN_USE"></div>
+  <button id="reclaimBtn" class="primary" data-w="RECONNECT"></button>
+</div>
+
+<!-- 2026-10-22(사용자 설계) — 빈 SD에 측정 기록을 다시 옮기는 동안(몇 분) 콘이 503 {"error":"restoring"} — 끝나면 주화면으로 -->
+<div id="restoreView" class="center hidden">
+  <div data-w="RESTORING"></div>
+</div>
+
+<!-- 주화면 — 콘 판넬 순서: Summary → Power Control → Sensor → Camera -->
+<div id="mainView" class="hidden">
+  <div id="conn"></div>
+  <main>
+    <section>
+      <h2 data-s="STR_PANEL_SUMMARY"></h2>
+      <div id="sumMem" class="val"></div>
+      <div id="sumBridge" class="val" style="display:flex;gap:12px"><span id="sumBr0" class="tap" style="flex:1"></span><span id="sumBr1" class="tap" style="flex:1"></span></div>
+      <div id="sumSd" class="val"></div>
+      <div id="sumFlash" class="val"></div>
+      <input type="file" id="restoreFile" accept=".bin,application/octet-stream" style="display:none">
+    </section>
+    <section>
+      <h2 data-s="STR_PANEL_POWER_CONTROL"></h2>
+      <div id="relays"></div>
+    </section>
+    <section>
+      <h2 data-s="STR_GROUP_SENSOR" data-statspop="1" class="tap"></h2>
+      <div id="sens"></div>
+    </section>
+    <section>
+      <h2 data-s="STR_GROUP_CAMERA" data-campop="1" class="tap"></h2>
+      <div id="cams"></div>
+    </section>
+  </main>
+</div>
+
+<div id="sheet" class="sheet hidden"><div class="sbody" id="sheetBody"></div></div>
+<div id="toast" class="toast hidden"></div>
+<div id="modal" class="modal hidden"><div class="mbox" id="modalBox"></div></div>
+<div id="busy" class="busy hidden"><div class="bbox"><div id="busyTxt" class="btxt"></div><div class="bar" id="busyBar"><i id="busyFill"></i></div></div></div>
+<div id="viewer" class="viewer hidden"><button class="vx" id="viewerX" aria-label="close">&#x2715;</button><img id="viewerImg" alt=""></div>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>
+(function () {
+  'use strict';
+  var POLL_MS = 5000;
+
+  /* 콘 문구 표 — build_web.py가 채움: { STR_X: [한, 영] } */
+  var STR = {"STR_LOGO_TITLE":["플렉스팜","FlexFarm"],"STR_TAB_DASHBOARD":["상황판","Dashboard"],"STR_TAB_STATISTICS":["통계","Sensor-Statistics"],"STR_TAB_OPTION":["설정","Settings"],"STR_TAB_LOG":["로그","Log"],"STR_GROUP_CNTL":["제어기","CNTL"],"STR_GROUP_SENSOR":["측정기","Sensor"],"STR_GROUP_CAMERA":["영상","Camera"],"STR_GROUP_SYSTEM":["시스템","System"],"STR_LABEL_LANGUAGE":["언어","Language"],"STR_STATUS_CONNECTING":["연결 대기 중","Waiting for connection"],"STR_STATUS_CONNECTED":["연결됨","Connected"],"STR_MSG_PAIR_CONFIRM":["연결을 허용할까요?","Allow this connection?"],"STR_MSG_UNPAIR_CONFIRM":["이 연결을 해제할까요?","Disconnect this connection?"],"STR_BTN_CONFIRM":["확인","OK"],"STR_BTN_CANCEL":["취소","Cancel"],"STR_STATUS_CANCEL_PENDING":["종료 대기 중...","Finishing..."],"STR_BTN_YES":["예","Yes"],"STR_BTN_NO":["아니오","No"],"STR_PANEL_SUMMARY":["요약","Summary"],"STR_PANEL_NO_SENSOR":["연결된 측정기 없음","No sensor device"],"STR_PANEL_NO_CAMERA":["연결된 카메라 없음","No camera device"],"STR_PANEL_NO_PAIRED_DEVICE":["연결된 장치 없음","No connected device"],"STR_PANEL_SENSOR_TODO":["(값/명령 UI는 다음에 추가 예정)","(Values/commands coming soon)"],"STR_PANEL_NO_PHOTO_YET":["(사진 없음)","(No photo yet)"],"STR_STATUS_OK":["정상","OK"],"STR_STATUS_PAIRED":["페어됨","Paired"],"STR_STATUS_ACTIVE":["통신 중","Active"],"STR_BTN_CAPTURE_NOW":["지금촬영","Shot now"],"STR_BTN_RENEW_LIST":["목록갱신","Refresh"],"STR_PANEL_LIST":["목록","List"],"STR_PANEL_PICTURE":["미리보기 - 원본은 웹에서","Thumbnail - Full size on WEB"],"STR_MSG_DELETE_PHOTO_CONFIRM":["이 사진을 삭제할까요?","Delete this photo?"],"STR_CAPTURE_STAGE1_PROGRESS":["1. 카메라에 명령 전달 중...","1. Sending command to camera..."],"STR_CAPTURE_STAGE1_DONE":["1. 카메라에 명령 전달 완료","1. Command delivered"],"STR_CAPTURE_STAGE2_INIT_NEEDED":["2. 카메라 초기화 중...","2. Initializing camera..."],"STR_CAPTURE_STAGE2_INIT_DONE":["2. 카메라 초기화 완료","2. Camera initialized"],"STR_CAPTURE_STAGE2_CAPTURING":["2. 촬영 중...","2. Capturing..."],"STR_CAPTURE_STAGE2_SUCCESS":["2. 촬영 완료","2. Capture complete"],"STR_CAPTURE_STAGE2_FAILED":["2. 촬영 실패","2. Capture failed"],"STR_CAPTURE_STAGE2_NORESPONSE":["2. 카메라 응답 없음","2. No response from camera"],"STR_CAPTURE_STAGE3_PROGRESS":["3. 목록 갱신 중...","3. Refreshing list..."],"STR_CAPTURE_STAGE3_DONE":["3. 목록 갱신 완료","3. List refreshed"],"STR_CAPTURE_STAGE3_UNKNOWN":["3. 상태 확인 불가 — 목록갱신으로 다시 확인하세요","3. Unable to verify — use Renew list to check again"],"STR_FETCH_CONNECTING":["사진 가져오는 중...","Fetching photo..."],"STR_FETCH_PROGRESS_FMT":["사진 가져오는 중... %d%%","Fetching photo... %d%%"],"STR_FETCH_PROGRESS_ETA_FMT":["사진 가져오는 중... %d%% (약 %d초 남음)","Fetching photo... %d%% (~%ds left)"],"STR_FETCH_DONE":["가져오기 완료","Photo received"],"STR_FETCH_FAILED":["가져오기 실패","Failed to fetch photo"],"STR_FETCH_STALLED":["응답 없음 — 연결 상태를 확인하세요","No response — check connection"],"STR_BTN_DELETE_ALL":["모두삭제","Delete all"],"STR_MSG_DELETE_ALL_CONFIRM":["모두 지울까요?","Delete all photos?"],"STR_DELETEALL_STAGE1_PROGRESS":["1. 접수 확인 중...","1. Waiting for camera to receive..."],"STR_DELETEALL_STAGE1_DELETING_FMT":["1. 삭제 중... (%u개)","1. Deleting... (%u files)"],"STR_DELETEALL_STAGE1_DONE":["1. 삭제 완료","1. Deleted"],"STR_DELETEALL_STAGE1_FAILED":["1. 삭제 실패","1. Delete failed"],"STR_DELETEALL_STAGE1_NORESPONSE":["1. 카메라 응답 없음","1. No response from camera"],"STR_DELETEALL_STAGE1_STOPPED_FMT":["1. 삭제 중단됨 — 완료 응답 없음(%u개 접수 후)","1. Delete stopped — no completion response (after receiving %u)"],"STR_DELETEALL_STAGE2_PROGRESS":["2. 목록 갱신 중...","2. Refreshing list..."],"STR_DELETEALL_STAGE2_DONE":["2. 목록 갱신 완료","2. List refreshed"],"STR_DELETEALL_STAGE2_UNKNOWN":["2. 상태 확인 불가 — 목록갱신으로 다시 확인하세요","2. Unable to verify — use Renew list to check again"],"STR_LIST_STAGE1_PROGRESS":["1. 가져오기 명령 전송 중...","1. Sending fetch command..."],"STR_LIST_STAGE1_DONE":["1. 가져오기 명령 전송됨","1. Fetch command sent"],"STR_LIST_STAGE1_NORESPONSE":["1. 카메라 응답 없음","1. No response from camera"],"STR_LIST_STAGE2_PROGRESS":["2. 목록 수신 중...","2. Receiving list..."],"STR_LIST_STAGE2_SUCCESS":["2. 목록 수신 성공","2. List received"],"STR_LIST_STAGE2_MISMATCH_FMT":["2. 목록 수신 실패: 개수 불일치(%u/%u개)","2. List receive failed: count mismatch (%u/%u)"],"STR_LIST_STAGE2_STALLED_FMT":["2. 목록 수신 실패: 응답 없음(%u/%u개)","2. List receive failed: no response (%u/%u)"],"STR_LIST_EMPTY":["사진 없음","No Picture"],"STR_LABEL_CAPTURE_INTERVAL":["촬영 주기","Capture interval"],"STR_LABEL_RESPONSE_INTERVAL":["응답성","Responsiveness"],"STR_LABEL_AUTO_IMAGE":["자동 노출/색 (AGC/AEC/AWB)","Auto exposure/color (AGC/AEC/AWB)"],"STR_LABEL_MAN_EXPOSURE":["노출(줄)","Exposure (lines)"],"STR_LABEL_MAN_GAIN":["게인(배)","Gain (x)"],"STR_LABEL_MAN_AWB":["AWB(배)","AWB (x)"],"STR_LABEL_MAN_AWB_R":["R","R"],"STR_LABEL_MAN_AWB_G":["G","G"],"STR_LABEL_MAN_AWB_B":["B","B"],"STR_LABEL_XCLK":["픽셀클럭(XCLK)","Pixel clock (XCLK)"],"STR_CAPTURE_QUEUED_TOAST":["캠 접속 대기 중 - 다음 접속 때 촬영합니다","Waiting for CAM - it will shoot on next wake"],"STR_BTN_NOT_CONNECTED":["연결안됨","Offline"],"STR_FMT_CAPTURE_ON_WAKE":["캠이 깨어나면 촬영합니다(최대 약 %u초)","Shoots when the CAM wakes (up to ~%us)"],"STR_OPT_XCLK_LIST":["5MHz\n10MHz\n20MHz","5MHz\n10MHz\n20MHz"],"STR_LABEL_SENS_MEASURE_INTERVAL":["측정 주기","Measure period"],"STR_OPT_SENS_MEASURE_INTERVAL_LIST":["15초\n1분\n10분","15S\n1M\n10M"],"STR_BTN_APPLY":["적용","Apply"],"STR_CONFIG_APPLY_PROGRESS":["설정 적용 중...","Applying settings..."],"STR_CONFIG_APPLY_STALLED":["응답 없음 — 연결 상태를 확인하세요","No response — check connection"],"STR_TITLE_ERROR_LIST":["에러/워닝 상태","Error / Warning status"],"STR_ERROR_LIST_EMPTY":["(없음)","(None)"],"STR_TITLE_WEB_QR":["웹 접속 QR","Web Access QR"],"STR_MSG_WEB_QR_NO_IP":["아직 IP가 없습니다","No IP yet"],"STR_LABEL_RESTART_DEVICE":["장치 재시작","Restart device"],"STR_BTN_RESTART":["재시작","Restart"],"STR_MSG_RESTART_CONFIRM":["정말 재시작하시겠습니까?","Do you want restart?"],"STR_OPT_CAPTURE_INTERVAL_LIST":["끄기\n30초\n1시간\n3시간\n8시간\n12시간","Off\n30S\n1H\n3H\n8H\n12H"],"STR_OPT_RESPONSE_INTERVAL_LIST":["즉시\n3초\n10초\n30초\n1분","Live\n3S\n10S\n30S\n1M"],"STR_LABEL_TIME":["시각","Time"],"STR_BTN_SET_TIME":["설정","Set"],"STR_TITLE_SET_TIME":["시각 설정","Set time"],"STR_PANEL_DEV_LOG":["Dev Log","Dev Log"],"STR_RESPONSE_HELP_0":["성능모드 — 즉시 반응(사실상 상시 동작)","Performance mode - responds instantly (effectively always on)"],"STR_RESPONSE_HELP_1":["동작확인 모드 — Sleep이 실제로 도는지 테스트용","Verify mode - for checking that sleep cycling actually works"],"STR_RESPONSE_HELP_2":["균형모드 — 절전되면서도 사용성 적절","Balanced mode - power-saving with reasonable usability"],"STR_RESPONSE_HELP_3":["절전모드 — 참을 수 있으면 배터리 오래감","Power-save mode - longer battery life if you can wait"],"STR_RESPONSE_HELP_4":["최대절전모드 — 수동촬영은 포기, 자동촬영분만 확인","Max power-save - manual capture unavailable, auto-captures only"],"STR_LABEL_ADAPTIVE_RESPONSE":["적응형 반응시간","Adaptive responsiveness"],"STR_OPT_ADAPTIVE_RESPONSE_LIST":["10초\n30초\n1분\n5분","10S\n30S\n1M\n5M"],"STR_HELP_ADAPTIVE_RESPONSE":["조작이 멈출 때까지 절전하지 않음","Won't power-save until you stop interacting"],"STR_BTN_PAUSE":["일시멈춤","Pause"],"STR_BTN_RESUME":["재개","Resume"],"STR_PANEL_GENERAL_LOG":["일반 로그","General Log"],"STR_LABEL_WEB":["웹","Web"],"STR_LABEL_MEMORY":["메모리","Memory"],"STR_LABEL_STORAGE":["저장공간","Storage"],"STR_LABEL_PICTURE":["사진","Picture"],"STR_LABEL_TOTAL":["전체","Total"],"STR_MSG_STORAGE_CLEANUP":["저장공간 정리: %s 오래된 기록 %u개 삭제(공간 확보)","Storage cleanup: %s - deleted %u oldest records to free space"],"STR_LABEL_BATTERY":["배터리","Battery"],"STR_LABEL_NETWORK":["네트워크","Network"],"STR_NETWORK_MODE_AP":["독립","AP"],"STR_NETWORK_MODE_STA":["종속","STA"],"STR_BTN_FIND":["찾기","Find"],"STR_MSG_NETWORK_MODE_RESTART_CONFIRM":["네트워크 모드를 바꾸려면 재시작해야 합니다. 지금 재시작할까요?","Changing network mode requires a restart. Restart now?"],"STR_TITLE_WIFI_SCAN":["WiFi 검색","WiFi Scan"],"STR_MSG_WIFI_SCANNING":["검색 중...","Scanning..."],"STR_MSG_WIFI_SCAN_EMPTY":["검색된 네트워크가 없습니다","No networks found"],"STR_LABEL_WIFI_PASSWORD":["비밀번호","Password"],"STR_BTN_CONNECT":["연결","Connect"],"STR_MSG_WIFI_CONNECTING":["연결 중...","Connecting..."],"STR_MSG_WIFI_CONNECT_FAILED":["연결 실패","Connection failed"],"STR_MSG_WIFI_STAGE_DISCONNECTING":["기존 연결 정리 중...","Clearing previous connection..."],"STR_MSG_WIFI_STAGE_AUTHENTICATING":["인증 시도 중...","Authenticating..."],"STR_STATUS_NOT_CONNECTED":["아직 연결된 네트워크 없음","Not connected yet"],"STR_STATUS_NO_AP":["AP 없음","No AP"],"STR_STATUS_NO_CONNECTION":["연결 안 됨","No connection"],"STR_TAG_WIFI_CONNECTED":["[연결됨] ","[Connected] "],"STR_BTN_RESCAN":["다시 찾기","Rescan"],"STR_BTN_CLOSE":["닫기","Close"],"STR_MSG_WIFI_CREDENTIALS_RESTART_CONFIRM":["네트워크 정보가 저장되었습니다. 적용하려면 재시작해야 합니다. 지금 재시작할까요?","Network settings saved. Restart to apply. Restart now?"],"STR_BTN_SHOW":["보기","Show"],"STR_BTN_HIDE":["숨김","Hide"],"STR_CONNECT_FAILED":["연결 실패","Connect failed"],"STR_DISCONNECT_SUCCESS":["연결 해제됨","Disconnected"],"STR_LIST_FETCH_SUCCESS":["목록 수신 완료","List received"],"STR_LIST_FETCH_FAILED":["목록 가져오기 실패","Failed to fetch list"],"STR_CHAN_LABEL_TEMP_C":["T","T"],"STR_CHAN_UNIT_TEMP_C":["°C","°C"],"STR_CHAN_LABEL_HUMI_PCT":["H","H"],"STR_CHAN_UNIT_HUMI_PCT":["%","%"],"STR_CHAN_LABEL_CO2_PPM":["이산화탄소","CO2"],"STR_CHAN_UNIT_CO2_PPM":["ppm","ppm"],"STR_SENSOR_VALUE_ROW_FMT":["%s %d.%02d%s (ID:%lu, Time: %02u:%02u:%02u)","%s %d.%02d%s (ID:%lu, Time: %02u:%02u:%02u)"],"STR_SENSOR_VALUE_PENDING":["측정 중...","Measuring..."],"STR_SENSOR_VALUE_INVALID":["부적합","Invalid"],"STR_CHAN_LABEL_NH3_PPM":["암모니아","Ammonia"],"STR_CHAN_UNIT_NH3_PPM":["ppm","ppm"],"STR_PANEL_STATS_PEAK":["최대/최소","Peak"],"STR_STATS_PEAK_ROW_FMT":["%s: 최대 %d.%02d%s / 최소 %d.%02d%s","%s: max %d.%02d%s / min %d.%02d%s"],"STR_STATS_PEAK_NO_DATA":["데이터 없음","No data"],"STR_STATS_TABLE_HEADER_ITEM":["센서","Sensor"],"STR_STATS_TABLE_HEADER_VALUE":["값","Value"],"STR_STATS_TABLE_HEADER_TIME":["시간","Time"],"STR_STATS_TABLE_EMPTY":["저장된 값 없음","No data yet"],"STR_STATS_PAGE_FMT":["%lu / %lu","%lu / %lu"],"STR_BTN_PREV_PAGE":[" < "," < "],"STR_BTN_NEXT_PAGE":[" > "," > "],"STR_PANEL_STATS_OVERVIEW":["개괄 (최대 / 최소 / 평균)","Overview (Max / Min / Avg)"],"STR_STATS_SCALE_OPTIONS":["1시간\n12시간\n1일\n3일\n1주","1h\n12h\n1d\n3d\n1w"],"STR_STATS_OVERVIEW_ROW_FMT":["%s[%s]: %d.%02d / %d.%02d / %d.%02d","%s[%s]: %d.%02d / %d.%02d / %d.%02d"],"STR_STATS_OVERVIEW_NO_DATA":["데이터 없음","No data"],"STR_BTN_JUMP_PREV10":["<< 10","<< 10"],"STR_BTN_JUMP_NEXT10":["10 >>","10 >>"],"STR_BTN_DELETE_STATS":["전체 삭제","Delete All"],"STR_CONFIRM_DELETE_STATS":["저장된 통계값을 전부 삭제할까요?\n되돌릴 수 없습니다.","Delete all saved statistics?\nThis cannot be undone."],"STR_LABEL_GRAPH_PLACEHOLDER":["그래프 (준비 중)","Graph (coming soon)"],"STR_BTN_DISCONNECT":["연결끊기","Disconnect"],"STR_LABEL_ALIAS":["별칭","Alias"],"STR_LABEL_CONNECTED":["연결됨","Connected"],"STR_LABEL_PENDING":["대기중","Pending"],"STR_LABEL_AUTO_CONNECT_KNOWN":["이전 연결 장치 자동연결","Auto-connect known devices"],"STR_LABEL_AUTO_CONNECT_NEW":["신규 접속 장치 자동연결","Auto-connect incoming devices"],"STR_LABEL_MEASURE_SHORT":["측정","Measure"],"STR_ERR_DESC_RECV_BUF_ALLOC":["수신 버퍼 할당 실패","Receive buffer alloc failed"],"STR_ERR_DESC_PANEL_BUF_ALLOC":["판넬 버퍼 할당 실패","Panel buffer alloc failed"],"STR_ERR_DESC_STA_CRED_ALLOC":["STA 자격증명 할당 실패","STA credential alloc failed"],"STR_ERR_DESC_NOT_PAIRED":["페어링 끊김 — 재연결 시도","Not paired - reconnecting"],"STR_ERR_DESC_TX_QUEUE_FULL":["전송 큐 가득 — 요청 버려짐","TX queue full - request dropped"],"STR_ERR_DESC_CHUNK_MISSING":["청크 누락","Chunk missing"],"STR_ERR_DESC_CRC_MISMATCH":["CRC 불일치","CRC mismatch"],"STR_ERR_DESC_DECODE_FAIL":["JPEG 디코드 실패","JPEG decode failed"],"STR_ERR_DESC_CAPTURE_FAILED":["촬영 실패","Capture failed"],"STR_ERR_DESC_CAPTURE_NORESPONSE":["지금촬영 무응답","Capture no response"],"STR_ERR_DESC_AUTO_CAPTURE_GAVEUP":["주기 촬영 3번 실패","Auto capture failed 3 times"],"STR_ERR_DESC_FONT_FILE_MISSING":["폰트 파일 없음","Font file missing"],"STR_ERR_DESC_FONT_BUF_ALLOC":["폰트 버퍼 할당 실패","Font buffer alloc failed"],"STR_ERR_DESC_FONT_FILE_OPEN":["폰트 파일 열기 실패","Font file open failed"],"STR_ERR_DESC_FONT_CREATE":["폰트 생성 실패","Font creation failed"],"STR_ERR_DESC_HTTPD_START":["웹서버 시작 실패","Web server start failed"],"STR_ERR_DESC_RTC_SET_FAILED":["RTC 시각설정 실패","RTC time set failed"],"STR_ERR_DESC_CONFIG_FILE_MISMATCH":["설정 파일 형식 불일치(기본값)","Config file mismatch (defaults)"],"STR_ERR_DESC_SD_MOUNT_FAILED":["SD카드 마운트 실패","SD card mount failed"],"STR_ERR_DESC_UNKNOWN":["알 수 없는 에러","Unknown error"],"STR_WARN_DESC_SD_BAD_ENTRY":["SD 손상 의심 항목 제외됨","SD damaged entries skipped"],"STR_WARN_DESC_BACKUP_DUE":["통계 백업할 때가 됨(웹 통계 → 백업)","Statistics backup due (web app: Statistics > Backup)"],"STR_WARN_DESC_SD_NOT_DUAL":["SD 한 벌 저장 중(포맷하면 이중 저장)","SD stores a single copy (format to make it dual)"],"STR_WARN_DESC_SD_VOL_REPAIRED":["SD 한쪽 손상을 다른 쪽으로 복구함(카드 상태 주의)","SD volume damage repaired from the other copy (watch the card)"],"STR_WARN_DESC_SD_VOL_FAILED":["SD 한쪽 사용 중지 - 카드 교체 준비","SD volume out of use - prepare a card replacement"],"STR_WARN_DESC_UNKNOWN":["알 수 없는 워닝","Unknown warning"],"STR_STATUS_SD_IO_ERROR_MSG":["오류 - 상태버튼을 눌러 조치하세요","error - tap the status button to act"],"STR_STATUS_SD_UNMOUNTED":["미마운트","not mounted"],"STR_STATUS_SD_EJECTED":["꺼냄(다시 쓰려면 꺼내기 아이콘)","ejected (tap the eject icon to use again)"],"STR_MSG_SD_EJECT_CONFIRM":["SD를 멈출까요? 진행 중인 저장을 마치고 멈춥니다. 멈춘 동안 측정값은 내부 플래시에 쌓이고 사진은 저장하지 않습니다.","Stop the SD card? Saving in progress finishes first. While stopped, measurements are kept in internal flash and photos are not saved."],"STR_MSG_SD_EJECT_DONE":["SD를 멈췄습니다. 이제 전원을 끄거나 카드를 빼도 됩니다.","SD card stopped. You can now power off or remove the card."],"STR_MSG_SD_EJECTING":["저장을 마치고 SD를 멈추는 중입니다...","Finishing saves and stopping the SD card..."],"STR_MSG_SD_REMOUNTING":["SD를 다시 연결하는 중입니다...","Reconnecting the SD card..."],"STR_MSG_SD_EJECT_FAIL":["SD 멈추기 중 오류가 있었습니다. 카드를 빼기 전에 잠시 기다려 주세요.","An error occurred while stopping the SD card. Wait a moment before removing it."],"STR_BTN_SD_RECONNECT":["재마운트","Remount"],"STR_BTN_SD_FORMAT":["포맷","Format"],"STR_MSG_SD_FORMAT_CONFIRM":["SD카드를 포맷하면 저장된 모든 사진/측정기록이 삭제됩니다. 계속하시겠습니까?","Formatting the SD card will erase all stored photos and measurement records. Continue?"],"STR_MSG_SD_RECONNECT_OK":["SD 재연결 성공","SD reconnected successfully"],"STR_MSG_SD_RECONNECT_FAIL":["SD 재연결 실패 - 카드를 확인하거나 다른 카드를 꽂고 다시 재마운트하세요(전원은 끄지 마세요, 측정값은 보관 중)","SD reconnect failed - check the card, or insert another card and tap Remount again (don't power off - measurements are being kept)"],"STR_MSG_SD_FORMAT_OK":["SD 포맷 완료","SD format complete"],"STR_MSG_SD_FORMAT_FAIL":["SD 포맷 실패","SD format failed"],"STR_ERR_DESC_SD_IO_FAIL":["SD 읽기/쓰기 오류","SD read/write failure"],"STR_ERR_DESC_TOUCH_INIT_FAIL":["터치/I2C 초기화 실패","Touch/I2C init failed"],"STR_ERR_DESC_BRIDGE_NORESPONSE":["브릿지 1 응답 없음","Bridge 1 not responding"],"STR_ERR_DESC_CAN_BUS_OFF":["CAN 버스 오프","CAN bus off"],"STR_ERR_DESC_CAN_TX_STUCK":["CAN 송신 응답 없음","CAN send not acknowledged"],"STR_ERR_DESC_BRIDGE2_NORESPONSE":["브릿지 2 응답 없음","Bridge 2 not responding"],"STR_WEB_LOCK_MSG":["웹에서 사용 중입니다","Web access in use"],"STR_WEB_LOCK_TAKEOVER":["웹 연결 끊고 사용","Disconnect web and use"],"STR_RESTORE_LOCK_MSG":["측정 기록을 SD로 복원하는 중입니다\n몇 분 걸리며, 끝나면 자동으로 풀립니다","Restoring measurement records to SD\nThis takes a few minutes and unlocks automatically"],"STR_MSG_STATS_BLOCKED_SD_FAIL":["SD 불량으로 통계를 조회할 수 없습니다. 상태버튼을 눌러 조치하세요.","Statistics can't be viewed because the SD card is faulty. Tap the status button to take action."],"STR_BTN_DISMISS":["지우기","Dismiss"],"STR_BTN_SD_RESOLVE":["해결","Resolve"],"STR_TITLE_SD_RESOLVE":["SD 조치 선택","Resolve SD Issue"],"STR_OVERVIEW_AIR_TEMP":["공기T","Air T"],"STR_OVERVIEW_AIR_HUMI":["공기H","Air H"],"STR_OVERVIEW_AGAR_TEMP":["Agar T","Agar T"],"STR_PRECISION_PRECISE":["정밀","Fine"],"STR_PRECISION_BASIC":["간이","Basic"],"STR_AGAR_BLENDED":["혼합","Blended"],"STR_VIEW_GROUP_AIR":["온습도","Air"],"STR_VIEW_GROUP_AGAR":["Agar","Agar"],"STR_VIEW_GROUP_GAS":["가스","Gas"],"STR_VIEW_GROUP_TEMP":["온도","Temp"],"STR_LABEL_MEASURE_TINY":["측정","M"],"STR_LABEL_BATTERY_TINY":["Bat","Bat"],"STR_LABEL_CAPTURE_TINY":["촬영","P"],"STR_LABEL_IMG_AUTO_TINY":["Automatic","Automatic"],"STR_LABEL_IMG_MANUAL_TINY":["Manual","Manual"],"STR_BTN_RECORD":["기록 보기","View Record"],"STR_TITLE_RECORD":["기록","Record"],"STR_LABEL_PERIOD":["기간:","Period:"],"STR_LABEL_STORAGE_LEGEND":["[사용 %(여유 MB)]","[Used % (MB free)]"],"STR_MSG_SD_RESOLVE_GUIDE":["제어기 전원을 끄지 마세요. 측정값은 내부 플래시에 보관 중입니다(SD로 아직 안 옮긴 값 %u개, 최대 7일).\n카드를 바꾸려면: 카드를 빼고 다른 카드를 꽂은 뒤 재마운트 — 새 카드에는 보관 중인 측정값이 자동으로 옮겨집니다.\n재마운트가 안 될 때만 포맷하세요(카드의 사진·기록이 지워집니다).\n재마운트·포맷은 10초쯤 걸립니다. 그동안 단추가 눌리지 않습니다.","Don't power off the CNTL. Measurements are being kept in internal flash (%u not yet on SD, up to 7 days).\nTo replace the card: take it out, insert another card, then tap Remount - kept measurements are moved to the new card automatically.\nFormat only if Remount fails (it erases the card's photos and records).\nRemount and Format take about 10 seconds. Buttons don't respond meanwhile."],"STR_LABEL_FLASH":["플래시 [MB]","Flash [MB]"],"STR_LABEL_BACKUP":["통계 백업","Stats backup"],"STR_LABEL_BACKUP_NEVER":["아직 없음","never"],"STR_BTN_STATS_BACKUP":["지금 백업","Back up now"],"STR_BTN_BACKUP":["백업","Backup"],"STR_BTN_EXPORT":["내보내기","Export"],"STR_BTN_IMPORT":["가져오기","Import"],"STR_BTN_DELETE":["지우기","Delete"],"STR_FMT_BACKUP_STATUS":["%u/%u개","%u/%u"],"STR_LABEL_BACKUP_LIST_EMPTY":["저장된 백업 없음","No backups saved"],"STR_MSG_BACKUP_LOCAL_NOTE":["이 목록은 이 웹앱 안에만 있습니다. 웹앱을 지우면 함께 지워지니, 가끔 내보내기로 다른 곳에도 저장하세요.","These backups live only inside this web app and are deleted with it - export one now and then to keep a copy elsewhere."],"STR_MSG_BACKUP_SAVED":["백업 저장됨 - %u개","Backup saved - %u records"],"STR_MSG_BACKUP_BAD_FILE":["통계 백업 파일이 아니거나 손상됨","Not a stats backup file, or it is damaged"],"STR_MSG_BACKUP_DELETE_CONFIRM":["이 백업을 지울까요?","Delete this backup?"],"STR_BTN_STATS_RESTORE":["복원","Restore"],"STR_MSG_RESTORE_CONFIRM":["이 백업 파일의 측정값을 제어기에 합칩니다(같은 값은 한 번만). 그래프 집계는 다시 계산됩니다. 계속할까요?","Merge the measurements in this backup file into the CNTL (same values only once). Graph aggregates are recalculated. Continue?"],"STR_MSG_RESTORE_RUNNING":["복원 중...","Restoring..."],"STR_MSG_RESTORE_DONE":["복원 완료 - %u개 추가, %u개는 이미 있음","Restore complete - %u added, %u already present"],"STR_MSG_RESTORE_FAIL":["복원 실패: %s","Restore failed: %s"],"STR_FMT_FLASH_USAGE":["앱 %s/%s, 데이터 %s/%s(통계 %s, 기타 %s, 여유 %s)","App %s/%s, Data %s/%s (Stats %s, Other %s, Free %s)"],"STR_PANEL_POWER_CONTROL":["전원제어","Power Control"],"STR_RELAY_DEFAULT_NAME_FMT":["릴레이 %d","Relay %d"],"STR_RELAY_REMOTE_NAME":["원격릴레이","Remote relay"],"STR_RELAY_REMOTE_PENDING":["확인 중","Confirming"],"STR_RELAY_REMOTE_DISCONNECTED":["연결 끊김","Disconnected"],"STR_LABEL_REMOTE_FAILSAFE":["끊기면 끄기","Off after link loss"],"STR_OPT_REMOTE_FAILSAFE_LIST":["1분\n10분\n30분\n1시간","1 min\n10 min\n30 min\n1 hour"],"STR_FMT_BRIDGE_ITEM":["브릿지%u: CH %u, %s","Bridge%u: CH %u, %s"],"STR_FMT_BRIDGE_ITEM_NOCH":["브릿지%u: %s","Bridge%u: %s"],"STR_BRIDGE_STATE_OK":["정상","OK"],"STR_BRIDGE_STATE_SETTING":["채널 설정 중","Setting channel"],"STR_BRIDGE_STATE_NORESP":["응답 없음","No response"],"STR_BRIDGE_STATE_ABSENT":["연결 안 됨","Not connected"],"STR_BRIDGE_STATE_CANERR":["CAN 오류","CAN error"],"STR_STATUS_RELAY_ON":["켬","On"],"STR_STATUS_RELAY_OFF":["끔","Off"],"STR_RELAY_NOT_CONFIGURED":["미설정","Unset"],"STR_MSG_RELAY_VALUE_CLAMPED":["값이 센서 범위를 벗어나 자동 조정됐습니다","Value adjusted to fit sensor range"],"STR_LABEL_MANUAL_MODE":["강제","Override"],"STR_TITLE_WARNING":["경고","Warning"],"STR_MSG_OVERRIDE_WARNING":["설정을 무시하고 강제로 켜거나 끕니다.","Override ignores configuration."],"STR_MSG_OVERRIDE_ON_SUMMARY":["강제 켬","On by manual override"],"STR_MSG_OVERRIDE_OFF_SUMMARY":["강제 끔","Off by manual override"],"STR_LABEL_CHAN_TYPE":["측정 항목:","Channel:"],"STR_OPT_CHAN_TYPE_LIST":["온도\n이산화탄소","Temperature\nCO2"],"STR_LABEL_SOURCE_KIND":["기준 소스:","Source:"],"STR_OPT_SOURCE_KIND_LIST":["그룹\n특정 장치","Group\nSpecific device"],"STR_LABEL_SOURCE_STAT":["통계:","Statistic:"],"STR_OPT_SOURCE_STAT_LIST":["평균\n최대\n최소","Average\nMax\nMin"],"STR_LABEL_PRECISION":["정밀도:","Precision:"],"STR_OPT_PRECISION_LIST":["정밀\n간이","Fine\nBasic"],"STR_LABEL_SOURCE_DEVICE":["장치:","Device:"],"STR_LABEL_DIRECTION":["방향:","Direction:"],"STR_OPT_DIRECTION_LIST":["오르면 On\n내리면 On","On when rising\nOn when falling"],"STR_LABEL_ON_THRESHOLD":["On 임계값:","On threshold:"],"STR_LABEL_OFF_THRESHOLD":["Off 임계값:","Off threshold:"],"STR_LABEL_MIN_HOLD":["최소 유지:","Min hold:"],"STR_OPT_MIN_HOLD_LIST":["30초\n1분\n3분\n5분","30S\n1M\n3M\n5M"],"STR_OPT_TREND_SAMPLE_LIST":["3\n5\n10","3\n5\n10"],"STR_LABEL_TREND_ENABLE":["추세 반영:","Trend:"],"STR_LABEL_TREND_LOOKAHEAD":["추세 예측(초):","Trend lookahead (sec):"],"STR_MSG_NO_SOURCE_DEVICE":["붙은 장치 없음","No device available"],"STR_LABEL_AI_MODE":["AI:","AI:"],"STR_OPT_RISE_FALL_LIST":["이상\n이하","Up to\nBelow"],"STR_OPT_TURN_ACTION_LIST":["켬\n끔","On\nOff"],"STR_SENTENCE_ARROW":["->","->"],"STR_LABEL_CENTER":["기준값","Center"],"STR_LABEL_MARGIN":["오차(+/-)","Margin (+/-)"],"STR_UNIT_TEMP":["°C","°C"],"STR_UNIT_CO2":["ppm","ppm"],"STR_LABEL_BASED_ON":["기준:","Based on:"],"STR_OPT_BASEDON_LIST":["그룹\n장치","Group\nDevice"],"STR_OPT_GROUP_CHOICE_TEMP_LIST":["공기 온도(기본)\n공기 온도(정밀)\nAgar 온도","Air T (Basic)\nAir T (Fine)\nAgar"],"STR_LABEL_TREND_WINDOW":["판단횟수:","Trend samples:"],"STR_LABEL_RELAY_ACTION":["동작:","Action:"],"STR_LABEL_RELAY_ITEM":["항목:","Item:"],"STR_LABEL_RELAY_CONDITION":["조건:","Condition:"],"STR_FMT_RELAY_SUMMARY":["{item} {value} {dir}이면 {act}","Turn {act} if {item} {dir} {value}"],"STR_LABEL_RELAY_MODE":["방식","Mode"],"STR_OPT_RELAY_MODE_LIST":["미설정\n타이머\n센서 AI\n센서 수동","Unset\nTimer\nSensor AI\nSensor Manual"],"STR_OPT_OVERRIDE_LIST":["해제\n켬\n끔","None\nOn\nOff"],"STR_RELAY_CHOOSE_CHAN":["선택","Select"],"STR_LABEL_TIMER_ON":["켜기","On for"],"STR_LABEL_TIMER_OFF":["끄기","Off for"],"STR_LABEL_DAY_NIGHT":["낮·밤 구분","Day/Night"],"STR_LABEL_DAY_START":["낮 시작","Day from"],"STR_LABEL_NIGHT_START":["밤 시작","Night from"],"STR_LABEL_DAY_ON":["낮 켜기","Day on"],"STR_LABEL_DAY_OFF":["낮 끄기","Day off"],"STR_LABEL_NIGHT_ON":["밤 켜기","Night on"],"STR_LABEL_NIGHT_OFF":["밤 끄기","Night off"],"STR_DUR_UNITS":["시간\n분\n초","h\nm\ns"],"STR_FMT_RELAY_TIMER_SUMMARY":["{on} 켜고 {off} 끄기 반복","On {on}, off {off}, repeat"],"STR_FMT_RELAY_TIMER_DN_SUMMARY":["낮 {on}/{off}, 밤 {non}/{noff}","Day {on}/{off}, Night {non}/{noff}"],"STR_LABEL_MANUAL_RELEASE":["자동 해제","Auto release"],"STR_OPT_MANUAL_RELEASE_LIST":["끝없음\n10분\n30분\n1시간\n3시간","Never\n10m\n30m\n1h\n3h"],"STR_SENTENCE_PLUSMINUS":["+/-","+/-"],"STR_UNIT_HUMI":["%","%"],"STR_CHANNEL_NAME_TEMP":["온도","Temperature"],"STR_CHANNEL_NAME_CO2":["이산화탄소","CO2"],"STR_DIRECTION_NAME_UPTO":["이상","Up to"],"STR_DIRECTION_NAME_BELOW":["이하","Below"],"STR_TITLE_CONFIRM":["확인","Confirm"],"STR_TITLE_SETTING":["설정","Setting"],"STR_TITLE_NOTICE":["알림","Notice"],"STR_TITLE_PROGRESS":["진행 중","In Progress"],"STR_BTN_VIEW":["보기","View"],"STR_STATUS_QUOTA_FULL":["상한 초과","Limit reached"],"STR_STATUS_CHOOSE":["선택 필요","Choose slot"],"STR_TITLE_SLOT":["자리 정하기","Choose slot"],"STR_MSG_SLOT_REPLACE_FMT":["%s\n기존 %s을(를) 대치할까요?","%s\nReplace %s?"],"STR_MSG_SLOT_ASK_FMT":["%s\n대치할 자리를 고르거나 신규로 붙이세요.","%s\nPick a slot to replace, or add as new."],"STR_MSG_SLOT_ASK_ONLY_FMT":["%s\n빈 자리가 없습니다. 대치할 자리를 고르세요.","%s\nNo free slot. Pick a slot to replace."],"STR_MSG_UNIT_ASK_FMT":["%s\n대치할 배지보드를 고르거나 신규로 붙이세요.","%s\nPick a substrate board to replace, or add as new."],"STR_MSG_UNIT_ASK_ONLY_FMT":["%s\n빈 자리가 없습니다. 대치할 배지보드를 고르세요.","%s\nNo free place. Pick a substrate board to replace."],"STR_GRAPH_CAT_TH":["온습도","T/H"],"STR_GRAPH_KIND":["종류별","Kind"],"STR_GRAPH_DEVICE":["기기별","Device"],"STR_GRAPH_AIRT":["T","T"],"STR_GRAPH_AIRH":["H","H"],"STR_GRAPH_AGART":["Agar","Agar"],"STR_GRAPH_AGAR":["Agar","Agar"],"STR_GRAPH_AGAR_FMT":["Agar%d","Agar%d"],"STR_GRAPH_AVG_FMT":["평균 %s","Avg %s"],"STR_HINT_ALIAS_LEN":["8자 이내","Up to 8 characters"],"STR_HINT_ALIAS_LEN_WEB":["한글 3자, 영문 8자 이내","Up to 3 Korean or 8 English characters"],"STR_LABEL_ALIAS_PREVIEW":["콘 화면 표시","On controller screen"],"STR_MSG_ALIAS_TOO_LONG":["별명이 깁니다. 한글 3자, 영문 8자 이내로 해 주세요.","Alias is too long. Use up to 3 Korean or 8 English characters."],"STR_MSG_SLOT_REPLACE_LIVE_FMT":["연결된 %s을(를) 끊고 대치할까요?","Disconnect %s and replace it?"],"STR_BTN_REPLACE":["대치","Replace"],"STR_BTN_NEW":["신규","New"],"STR_SLOT_LIVE":["연결됨","connected"],"STR_SLOT_NOT_LIVE":["연결 없음","not connected"],"STR_CAM_SLOT_FMT":["캠 %u","Cam %u"],"STR_BTN_FORGET":["완전히 지우기","Forget"],"STR_MSG_FORGET_CONFIRM_FMT":["%s\n자리와 기록을 모두 지울까요?\n(되돌릴 수 없음)","%s\nDelete its slots and all records?\n(cannot be undone)"],"STR_LABEL_SLOTS":["센서·캠 자리","Sensor/cam slots"],"STR_TITLE_SLOTS":["자리 목록","Slots"],"STR_SLOTS_EMPTY":["등록된 자리가 없습니다.","No slots registered."],"STR_PENDING_AS_WAS":["이전:","As was"],"STR_PENDING_NEW":["새 장치","Newly incoming"],"STR_CAMERA_POPUP_LOADING":["카메라 목록을 불러오는 중...","Loading cameras..."],"STR_CAMERA_POPUP_NONE":["카메라도 사진도 아직 없습니다.","No cameras or photos yet."],"STR_AGAR_SLOT_FMT":["Agar %d","Agar %d"],"STR_LABEL_SCREEN_OFF":["화면 자동 꺼짐","Screen off"],"STR_OPT_SCREEN_OFF_LIST":["끄기\n1분\n5분\n10분","Off\n1 min\n5 min\n10 min"],"STR_BTN_CALIB_RESET":["보정 초기화","Calib Reset"],"STR_MSG_CALIB_RESET_CONFIRM":["센서 보정을 공장 상태로 되돌릴까요?\n센스가 깨어나면 실행합니다.","Reset sensor calibration to factory?\nRuns when the sensor wakes."],"STR_MSG_CALIB_RESET_QUEUED":["센스가 깨어나면 실행합니다. 결과는 알림 목록에 남습니다.","Runs when the sensor wakes. The result goes to the alarm list."],"STR_LABEL_LIGHT_TEST":["조명 테스트","Light Test"],"STR_TITLE_BRIDGE_NEW":["새 브릿지","New bridge"],"STR_MSG_BRIDGE_ASK_FMT":["초록 LED가 빠르게 깜빡이는 브릿지는 어느 것인가요?\nMAC %s","Which bridge is the one with the fast-blinking green LED?\nMAC %s"],"STR_BTN_BRIDGE_1":["브릿지1 (실내 안테나)","Bridge1 (indoor antenna)"],"STR_BTN_BRIDGE_2":["브릿지2 (실외 안테나)","Bridge2 (outdoor antenna)"],"STR_TITLE_BRIDGE":["브릿지","Bridge"],"STR_MSG_BRIDGE_INFO_FMT":["브릿지%u (%s)\nMAC: %s\n상태: %s","Bridge%u (%s)\nMAC: %s\nState: %s"],"STR_BRIDGE_ANT_IN":["실내 안테나","indoor antenna"],"STR_BRIDGE_ANT_OUT":["실외 안테나","outdoor antenna"],"STR_BTN_BRIDGE_REASSIGN":["다시 정하기","Reassign"],"STR_RELAY_REMOTE_NAME_FMT":["원격릴레이%d","Remote relay %d"],"STR_POWER_LOCAL":["로컬","Local"],"STR_POWER_REMOTE":["원격","Remote"],"STR_MSG_BRIDGE_REASSIGN_CONFIRM":["이 브릿지의 번호를 비우고 다시 시작시킵니다. 다시 붙으면 어느 브릿지인지 묻습니다.","Clear this bridge's number and restart it? When it comes back you will be asked which bridge it is."]};
+  /* 에러·경고 코드 → 설명 문구 키 — build_web.py가 콘 err/warn_code_to_desc_str에서 뽑아 채움 */
+  var ERRDESC = {"E":{"1003":"STR_ERR_DESC_RECV_BUF_ALLOC","1005":"STR_ERR_DESC_PANEL_BUF_ALLOC","1006":"STR_ERR_DESC_STA_CRED_ALLOC","2007":"STR_ERR_DESC_NOT_PAIRED","2009":"STR_ERR_DESC_TX_QUEUE_FULL","3002":"STR_ERR_DESC_CHUNK_MISSING","3003":"STR_ERR_DESC_CRC_MISMATCH","3004":"STR_ERR_DESC_DECODE_FAIL","4003":"STR_ERR_DESC_CAPTURE_FAILED","4004":"STR_ERR_DESC_CAPTURE_NORESPONSE","4005":"STR_ERR_DESC_AUTO_CAPTURE_GAVEUP","5001":"STR_ERR_DESC_FONT_FILE_MISSING","5002":"STR_ERR_DESC_FONT_BUF_ALLOC","5003":"STR_ERR_DESC_FONT_FILE_OPEN","5004":"STR_ERR_DESC_FONT_CREATE","5005":"STR_ERR_DESC_HTTPD_START","5006":"STR_ERR_DESC_RTC_SET_FAILED","5007":"STR_ERR_DESC_CONFIG_FILE_MISMATCH","5008":"STR_ERR_DESC_SD_MOUNT_FAILED","5009":"STR_ERR_DESC_SD_IO_FAIL","5010":"STR_ERR_DESC_TOUCH_INIT_FAIL","5011":"STR_ERR_DESC_BRIDGE_NORESPONSE","5012":"STR_ERR_DESC_CAN_BUS_OFF","5013":"STR_ERR_DESC_CAN_TX_STUCK","5014":"STR_ERR_DESC_BRIDGE2_NORESPONSE"},"E_UNKNOWN":"STR_ERR_DESC_UNKNOWN","W":{"6002":"STR_WARN_DESC_SD_BAD_ENTRY","6003":"STR_WARN_DESC_BACKUP_DUE","6004":"STR_WARN_DESC_SD_NOT_DUAL","6005":"STR_WARN_DESC_SD_VOL_REPAIRED","6006":"STR_WARN_DESC_SD_VOL_FAILED"},"W_UNKNOWN":"STR_WARN_DESC_UNKNOWN"};
+  /* 웹 전용 문구 */
+  var W = {
+    PASSWORD: ['비밀번호', 'Password'], LOGIN: ['로그인', 'Log in'], LOGIN_FAILED: ['비밀번호가 맞지 않습니다', 'Wrong password'], LOGIN_LOCKED: ['로그인 시도가 너무 많습니다. 5분 뒤 다시 시도하세요', 'Too many attempts. Try again in 5 minutes'],
+    LOCAL_IN_USE: ['제어기 화면에서 사용 중입니다', 'CNTL is being used on its screen'], RECONNECT: ['다시 연결', 'Reconnect'],
+    RESTORING: ['측정 기록을 SD로 복원하는 중입니다. 몇 분 걸리며, 끝나면 자동으로 돌아갑니다',
+                'Restoring measurement records to SD. This takes a few minutes and returns automatically'],
+    OFFLINE: ['연결 끊김', 'Offline'], WEB: ['웹', 'Web'],
+    LOADING: ['받는 중', 'Loading'], CAPTURING: ['촬영 중', 'Capturing'], NO_PHOTO: ['사진이 오지 않았습니다', 'No photo arrived'],
+    SEC: ['초', 's'],
+    NOTIFY: ['알림', 'Notifications'], SECURITY: ['보안', 'Security'],
+    N_TYPES: [['에러', 'Errors'], ['경고', 'Warnings'], ['릴레이 켜짐·꺼짐', 'Relay on/off'], ['장치 연결 끊김', 'Device disconnected'],
+              ['SD 오류', 'SD error'], ['배터리 부족', 'Low battery'], ['CAN 버스 이상', 'CAN bus fault']],
+    TOPIC: ['ntfy 토픽', 'ntfy topic'], CLICK: ['알림을 누르면 열 주소', 'Click URL'], TEST_SEND: ['시험 알림 보내기', 'Send test'],
+    SENT: ['보냈습니다', 'Sent'], SAVED: ['저장했습니다', 'Saved'], INVALID: ['형식이 맞지 않습니다', 'Invalid format'],
+    TIME_PHONE: ['휴대폰 시각으로', 'Use phone time'], PW_OLD: ['지금 비밀번호', 'Current password'], PW_NEW: ['새 비밀번호', 'New password'],
+    PW_CHANGE: ['비밀번호 변경', 'Change password'], PW_CHANGED: ['비밀번호를 바꿨습니다', 'Password changed'],
+    PW_FAIL: ['비밀번호를 바꾸지 못했습니다', 'Password not changed'], LOGOUT_ALL: ['모든 기기 로그아웃', 'Log out all devices'],
+    LOGOUT_ALL_CONFIRM: ['모든 기기에서 로그아웃합니다. 이 기기도 다시 로그인해야 합니다.', 'All devices will be logged out, including this one.'],
+    RESTARTING: ['재시작합니다', 'Restarting'], PHOTO_ARRIVED: ['새 사진이 도착했습니다', 'New photo arrived'],
+    NOT_PUSHED: ['보내지 않음(꺼진 종류)', 'Not sent (type off)'], NO_ALARMS: ['알림이 없습니다', 'No notifications'],
+    RM_SETUP: ['원격 접속', 'Remote access'], RM_BROKER: ['브로커 주소(wss://...)', 'Broker URL (wss://...)'], RM_SITE: ['현장 이름', 'Site name'],
+    RM_USER: ['사용자', 'User'], RM_CONNECT: ['연결', 'Connect'], RM_FAILED: ['브로커에 연결하지 못했습니다', 'Could not connect to the broker'],
+    RM_READONLY: ['원격 접속에서는 볼 수만 있습니다', 'Remote access is view-only']
+  };
+  /* 센서 채널 종류(esp_now_link.h SENSOR_CHAN_*) → 콘 주화면과 같은 글자·단위 */
+  var CHAN = { 1: ['T', 'STR_CHAN_UNIT_TEMP_C'], 2: ['H', 'STR_CHAN_UNIT_HUMI_PCT'], 3: ['C', 'STR_CHAN_UNIT_CO2_PPM'], 4: ['A', 'STR_CHAN_UNIT_NH3_PPM'] };
+  var CHAN_CO2 = 3;
+  var STATUS_KEY = { waiting: 'STR_STATUS_CONNECTING', active: 'STR_STATUS_ACTIVE', paired: 'STR_STATUS_PAIRED' };
+
+  var lang = 'ko';
+  try { lang = localStorage.getItem('lang') || ((navigator.language || '').toLowerCase().indexOf('ko') === 0 ? 'ko' : 'en'); } catch (e) {}
+  function li() { return lang === 'ko' ? 0 : 1; }
+  function S(k) { var v = STR[k]; return v ? v[li()] : k; }
+  function Wt(k) { var v = W[k]; return v ? v[li()] : k; }
+  function fmt(s) { var a = arguments, i = 1; return s.replace(/%d|%s|%u/g, function () { return a[i++]; }); }
+  /* 2026-11-14 — 콘 romanize_hangul과 같은 로마자(콘 화면 별명 미리보기), 콘 device_config_alias_fits와 같은 길이 규칙(한글 1자 = 영문 2.5자, 합 8 이하) */
+  var ROM_I = ['g', 'kk', 'n', 'd', 'tt', 'r', 'm', 'b', 'pp', 's', 'ss', '', 'j', 'jj', 'ch', 'k', 't', 'p', 'h'];
+  var ROM_M = ['a', 'ae', 'ya', 'yae', 'eo', 'e', 'yeo', 'ye', 'o', 'wa', 'wae', 'oe', 'yo', 'u', 'wo', 'we', 'wi', 'yu', 'eu', 'ui', 'i'];
+  var ROM_F = ['', 'k', 'k', 'k', 'n', 'n', 'n', 't', 'l', 'k', 'm', 'l', 'l', 'l', 'p', 'l', 'm', 'p', 'p', 't', 't', 'ng', 't', 't', 'k', 't', 'p', 't'];
+  function romanize(t) {
+    var o = '';
+    for (var ch of t) {
+      var c = ch.codePointAt(0);
+      if (c < 0x80) o += ch;
+      else if (c >= 0xAC00 && c <= 0xD7A3) { var x = c - 0xAC00; o += ROM_I[Math.floor(x / 588)] + ROM_M[Math.floor((x % 588) / 28)] + ROM_F[x % 28]; }
+      else o += '?';
+    }
+    return o;
+  }
+  function aliasFits(t) { var h = 0; for (var ch of t) h += ch.codePointAt(0) < 0x80 ? 2 : 5; return h <= 16; }
+
+  var timer = null, view = '', last = null;
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+  function applyTexts() {
+    document.documentElement.lang = lang;
+    document.title = S('STR_LOGO_TITLE');
+    [].forEach.call(document.querySelectorAll('[data-s]'), function (el) { el.textContent = S(el.getAttribute('data-s')); });
+    [].forEach.call(document.querySelectorAll('[data-w]'), function (el) { el.textContent = Wt(el.getAttribute('data-w')); });
+    [].forEach.call(document.querySelectorAll('[data-w-ph]'), function (el) { el.placeholder = Wt(el.getAttribute('data-w-ph')); });
+    if (last) render(last);
+    if (sheetRender) sheetRender();
+  }
+
+  function show(v) {
+    view = v;
+    $('loginView').classList.toggle('hidden', v !== 'login');
+    $('remoteView').classList.toggle('hidden', v !== 'remote');
+    $('localView').classList.toggle('hidden', v !== 'local');
+    $('restoreView').classList.toggle('hidden', v !== 'restore');
+    $('mainView').classList.toggle('hidden', v !== 'main');
+    if (v !== 'main') { clearTimeout(timer); wsStop(); }
+    clearTimeout(restoreTimer);
+    if (v === 'restore') {   /* 2026-10-22 — 열린 팝업은 닫고 5초마다 끝났는지 물어봄 */
+      if (!$('sheet').classList.contains('hidden')) realCloseSheet();
+      restoreTimer = setTimeout(restoreCheck, 5000);
+    }
+    if (v === 'login') setTimeout(function () { $('pw').focus(); }, 0);
+  }
+
+  /* 2026-10-22 — 복원 중 화면: 끝나면 주화면으로 */
+  var restoreTimer = null;
+  function restoreCheck() {
+    if (view !== 'restore') return;
+    api('api/restore_state').then(function (d) {
+      if (view !== 'restore') return;
+      if (d.restoring) { restoreTimer = setTimeout(restoreCheck, 5000); return; }
+      show('main'); poll();
+    }).catch(function (e) { if (!(e && e.handled) && view === 'restore') restoreTimer = setTimeout(restoreCheck, 5000); });
+  }
+
+  /* ── 2026-11-22(사용자 결정 — 3단계 읽기 터널) — 정적 호스팅(GitHub Pages)에서 연 웹앱은 현장 콘에 직접 갈 수 없어서(셀룰러
+   *    CGNAT) 같은 요청을 MQTT(브로커 WebSocket)로 보냄. 콘은 받은 요청을 자기 웹 서버에 그대로 넘기고 응답을 돌려줌(콘 cloud_link.c).
+   *    REMOTE는 build_web.py가 GitHub Pages용 파일에서만 true로 바꿈 — 콘이 내보내는 웹앱은 예전처럼 fetch.
+   *    요청 = "<id>\n<METHOD> /<경로>\n<Cookie>\n<Content-Type>\n<본문>", 응답 = 조각마다 JSON 머리 한 줄 + "\n" + 본문 조각.
+   *    로그인 쿠키는 브라우저 쿠키 대신 localStorage에 두고 요청마다 보냄. 3단계는 읽기만(콘이 쓰기 요청에 403) ── */
+  var REMOTE = true;
+  var RM_KEY = 'ffRemote', CK_KEY = 'ffCookie';
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  function rmCfg() { try { return JSON.parse(lsGet(RM_KEY) || 'null'); } catch (e) { return null; } }
+  var tun = null;
+  function tunClose() {
+    if (!tun) return;
+    var t = tun;
+    tun = null;
+    Object.keys(t.pend).forEach(function (id) { clearTimeout(t.pend[id].tm); t.pend[id].rej(new Error('closed')); });
+    t.waiters.forEach(function (w) { clearTimeout(w.tm); w.rej(new Error('closed')); });
+    try { t.cli.end(true); } catch (e) {}
+  }
+  function tunOpen(c) {
+    var cid = ('0000000' + Math.floor(Math.random() * 0xffffffff).toString(16)).slice(-8);
+    var t = { pend: {}, seq: 0, ok: false, waiters: [], reqT: 'ff/' + c.site + '/req/' + cid, resT: 'ff/' + c.site + '/res/' + cid };
+    t.cli = mqtt.connect(c.url, { username: c.user, password: c.pass, clientId: 'ffw-' + cid, clean: true, protocolVersion: 4,
+                                  reconnectPeriod: 3000, connectTimeout: 10000 });
+    t.cli.on('connect', function () {
+      t.cli.subscribe(t.resT, { qos: 1 }, function (err) {
+        if (err) return;
+        t.ok = true;
+        var ws = t.waiters; t.waiters = [];
+        ws.forEach(function (w) { clearTimeout(w.tm); w.res(); });
+      });
+    });
+    t.cli.on('close', function () { t.ok = false; });
+    t.cli.on('error', function (e) {   /* 계정이 틀리면(접속 거부) 다시 시도하지 않고 설정 화면으로 */
+      if (e && (e.code === 4 || e.code === 5 || e.code === 134 || e.code === 135)) {
+        tunClose();
+        show('remote');
+        $('rmMsg').textContent = Wt('RM_FAILED');
+      }
+    });
+    t.cli.on('message', function (topic, m) { tunMsg(t, m); });
+    return t;
+  }
+  function tunReady(t, ms) {
+    if (t.ok) return Promise.resolve();
+    return new Promise(function (res, rej) {
+      var w = { res: res, rej: rej };
+      w.tm = setTimeout(function () { t.waiters = t.waiters.filter(function (x) { return x !== w; }); rej(new Error('broker')); }, ms);
+      t.waiters.push(w);
+    });
+  }
+  function tunMsg(t, m) {
+    var nl = m.indexOf(10);
+    if (nl < 0) return;
+    var h;
+    try { h = JSON.parse(new TextDecoder().decode(m.subarray(0, nl))); } catch (e) { return; }
+    var p = t.pend[h.id];
+    if (!p) return;
+    if (h.i === 0) p.h = h;
+    if (!p.parts[h.i]) { p.parts[h.i] = m.slice(nl + 1); p.got++; }
+    if (p.h && p.got === h.n) { clearTimeout(p.tm); delete t.pend[h.id]; p.res(tunResp(p.h, p.parts, h.n)); }
+  }
+  function tunResp(h, parts, n) {
+    var len = 0, i, o = 0;
+    for (i = 0; i < n; i++) len += parts[i].length;
+    var u = new Uint8Array(len);
+    for (i = 0; i < n; i++) { u.set(parts[i], o); o += parts[i].length; }
+    if (h.sc) lsSet(CK_KEY, h.sc.split(';')[0]);   /* 로그인 토큰(이름=값) */
+    var hd = { 'content-type': h.ct || '', 'content-length': String(len), 'x-cntl-restoring': h.rs ? '1' : null };
+    function txt() { return new TextDecoder().decode(u); }
+    return { status: h.s, ok: h.s >= 200 && h.s < 300, body: null,
+             headers: { get: function (k) { var v = hd[String(k).toLowerCase()]; return v === undefined ? null : v; } },
+             text: function () { return Promise.resolve(txt()); },
+             json: function () { return Promise.resolve(JSON.parse(txt())); },
+             arrayBuffer: function () { return Promise.resolve(u.buffer); },
+             blob: function () { return Promise.resolve(new Blob([u], { type: h.ct || '' })); } };
+  }
+  /* fetch 대신 — 콘에서 열었으면 fetch 그대로, 밖에서 열었으면 터널. 돌려주는 것은 fetch 응답과 같은 모양(쓰는 부분만) */
+  function xfetch(path, opts) {
+    if (!REMOTE) return fetch(path, opts);
+    opts = opts || {};
+    if (!tun) {
+      var c = rmCfg();
+      if (!c || !c.url || !c.site) { show('remote'); return Promise.reject({ handled: true }); }
+      tun = tunOpen(c);
+    }
+    var t = tun;
+    return tunReady(t, 15000).then(function () {
+      return new Promise(function (res, rej) {
+        var id = ++t.seq, ct = (opts.headers && opts.headers['Content-Type']) || '', b = opts.body;
+        var head = id + '\n' + (opts.method || 'GET') + ' /' + String(path).replace(/^\//, '') + '\n' + (lsGet(CK_KEY) || '') + '\n' + ct + '\n';
+        var msg;
+        if (b == null || typeof b === 'string') msg = head + (b || '');
+        else {
+          var hb = new TextEncoder().encode(head), bb = new Uint8Array(b);
+          msg = new Uint8Array(hb.length + bb.length); msg.set(hb); msg.set(bb, hb.length);
+        }
+        var ms = /^api\/sd\//.test(path) ? 130000 : /^api\/cam\/photo\?/.test(path) ? 90000 : 30000;
+        t.pend[id] = { res: res, rej: rej, parts: {}, got: 0, h: null,
+                       tm: setTimeout(function () { delete t.pend[id]; rej(new Error('timeout')); }, ms) };
+        t.cli.publish(t.reqT, msg, { qos: 1 });
+      });
+    });
+  }
+  if (REMOTE) {
+    $('remoteView').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      $('rmMsg').textContent = '';
+      lsSet(RM_KEY, JSON.stringify({ url: $('rmUrl').value.trim(), site: $('rmSite').value.trim(), user: $('rmUser').value.trim(), pass: $('rmPw').value }));
+      tunClose();
+      show('main');
+      poll();
+    });
+    (function () {   /* 처음 한 번 — 주소 뒤 #b=..&s=..&u=..&p=..로 받은 값을 칸에 채우고 주소에서는 지움 */
+      var c = rmCfg() || {}, q = {};
+      location.hash.replace(/^#/, '').split('&').forEach(function (kv) { var i = kv.indexOf('='); if (i > 0) q[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1)); });
+      if (q.b || q.s || q.u || q.p) {
+        c = { url: q.b || c.url || '', site: q.s || c.site || '', user: q.u || c.user || '', pass: q.p || c.pass || '' };
+        lsSet(RM_KEY, JSON.stringify(c));
+        try { history.replaceState(null, '', location.pathname); } catch (e) {}
+      }
+      $('rmUrl').value = c.url || ''; $('rmSite').value = c.site || ''; $('rmUser').value = c.user || ''; $('rmPw').value = c.pass || '';
+    })();
+    $('conn').addEventListener('click', function () { if ($('conn').className === 'bad') show('remote'); });   /* 끊겼으면 눌러서 설정 */
+  }
+
+  /* 공통 요청 — 401이면 로그인, 409(local)면 넘겨받음 화면, 503(restoring)이면 복원 중 화면 */
+  function api(path, opts) {
+    opts = opts || {};
+    opts.cache = 'no-store';
+    opts.credentials = 'same-origin';
+    return xfetch(path, opts).then(function (r) {
+      if (r.status === 401) { show('login'); throw { handled: true }; }
+      if (r.status === 403 && REMOTE) { toast(Wt('RM_READONLY')); throw { handled: true }; }
+      if (r.status === 409) { show('local'); throw { handled: true }; }
+      if (r.status === 503 && r.headers.get('X-Cntl-Restoring')) { show('restore'); throw { handled: true }; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    });
+  }
+
+  /* ── 표시 규칙(콘 ui_main.c와 같게) ── */
+  function bytesHuman(b) { return b >= 1048576 ? (b / 1048576).toFixed(2) + 'MB' : (b / 1024).toFixed(1) + 'KB'; }
+  function signalHtml(n) {
+    /* update_signal_widget: RSSI → 칸 수, 색 = 곧 끊김 빨강 / 통신 중 파랑 / 페어됨 초록 */
+    var r = n.rssi, f = (r === undefined) ? 0 : r >= -45 ? 5 : r >= -55 ? 4 : r >= -65 ? 3 : r >= -75 ? 2 : r >= -85 ? 1 : 0;
+    var c = n.near_orphan ? 'var(--red)' : n.status === 'active' ? 'var(--blue)' : 'var(--green)';
+    var h = '<span class="sig">';
+    for (var i = 0; i < 5; i++) h += '<i style="height:' + (4 + i * 3) + 'px;' + (i < f ? 'background:' + c : '') + '"></i>';
+    return h + '</span>';
+  }
+  /* 10-05(사용자 결정) — 한글 별명은 영어 화면에서 로마자로. 로마자는 콘이 같이 보냄(<key>_en, 콘 화면과 같은 변환) */
+  function L(o, k) { var e = o[k + '_en']; return (lang === 'en' && e) ? e : o[k]; }
+  function nodeName(n) { return L(n, 'alias') || n.name; }
+
+  /* 10-15 — 콘 fmt_size와 같게: MB 소수 1자리 숫자(단위는 제목 "[MB]"에만) */
+  function fsize(b) { return (Math.round(b * 10 / 1048576) / 10).toFixed(1); }
+  function renderFlash(f) {   /* 10-15(사용자 지시, 개발·시험용) — 콘 Summary "플래시:" 줄과 같은 틀(STR_FMT_FLASH_USAGE) */
+    var el = $('sumFlash');
+    if (!f) { el.textContent = ''; return; }
+    var v = [fsize(f.app), fsize(f.app_max), fsize(f.fs), fsize(f.fs_max), fsize(f.stats), fsize(Math.max(0, f.fs - f.stats)),
+             fsize(Math.max(0, f.fs_max - f.fs))], i = 0;
+    el.textContent = S('STR_LABEL_FLASH') + ': ' + S('STR_FMT_FLASH_USAGE').replace(/%s/g, function () { return v[i++]; });
+  }
+
+  function renderSummary(d) {
+    $('sumMem').textContent = S('STR_LABEL_MEMORY') + ': I = ' + bytesHuman(d.mem.i) + ' / P = ' + bytesHuman(d.mem.p);
+    /* 10-18(보릴 6단계) — 브릿지 줄(콘 refresh_bridge_status_line과 같은 규칙) */
+    if (d.bridges) {
+      var bst = ['STR_BRIDGE_STATE_OK', 'STR_BRIDGE_STATE_SETTING', 'STR_BRIDGE_STATE_NORESP', 'STR_BRIDGE_STATE_ABSENT'];
+      d.bridges.forEach(function (b, i) {   /* 두 칸(콘의 웹·메모리 줄과 같은 칸 나눔) */
+        var st = S(d.canerr ? 'STR_BRIDGE_STATE_CANERR' : bst[b.st]), el = $('sumBr' + i);
+        if (el) el.textContent = b.ch ? fmt(S('STR_FMT_BRIDGE_ITEM'), i + 1, b.ch, st) : fmt(S('STR_FMT_BRIDGE_ITEM_NOCH'), i + 1, st);
+      });
+    }
+    renderFlash(d.flash);
+    var sd = d.sd || {}, el = $('sumSd');
+    el.className = 'val';
+    if (sd.state === 'io_error') { el.textContent = 'SD: ' + S('STR_STATUS_SD_IO_ERROR_MSG'); el.className = 'val red'; return; }
+    if (sd.state === 'unmounted') { el.textContent = 'SD: ' + S('STR_STATUS_SD_UNMOUNTED'); el.className = 'val red'; return; }
+    if (sd.state !== 'ok') { el.textContent = ''; return; }
+    var names = { picture: 'STR_LABEL_PICTURE', measure: 'STR_LABEL_MEASURE_SHORT', total: 'STR_LABEL_TOTAL' };
+    el.textContent = 'SD: ' + S('STR_LABEL_STORAGE_LEGEND') + ' ' + sd.areas.map(function (a) {
+      return S(names[a.id]) + ' ' + a.pct + '(' + a.remain_mb + ')';
+    }).join(' / ');
+  }
+
+  function relaySummary(r) {
+    /* refresh_power_control_panel과 같은 문장 — 언어별 어순 틀(STR_FMT_RELAY_SUMMARY, 콘 fill_relay_summary와 같은 규칙) */
+    if (r.override) {   /* 11-12(사용자 결정) — 남은 시간(분 올림)과 강제가 풀리면 돌아갈 방식: "강제 켬, 25분 -> 센서 AI"(콘과 같음) */
+      var o = S(r.override_on ? 'STR_MSG_OVERRIDE_ON_SUMMARY' : 'STR_MSG_OVERRIDE_OFF_SUMMARY');
+      if (r.rem != null) o += ', ' + fmtDur(Math.ceil(r.rem / 60) * 60);
+      return o + ' ' + S('STR_SENTENCE_ARROW') + ' ' + (S('STR_OPT_RELAY_MODE_LIST').split('\n')[r.ret || 0] || '');
+    }
+    if (!r.active) return S('STR_RELAY_NOT_CONFIGURED');   /* 11-12 — 미설정 */
+    if (r.timer) return timerSummary(r.timer);   /* 10-09 — 동작 = 타이머(콘 fill_timer_summary와 같은 틀) */
+    if (!r.configured) return S('STR_RELAY_NOT_CONFIGURED');
+    var num = r.center === null ? '-' : (r.chan === CHAN_CO2 ? String(Math.round(r.center)) : Number(r.center).toFixed(1));
+    var parts = { act: S(r.turns_on ? 'STR_STATUS_RELAY_ON' : 'STR_STATUS_RELAY_OFF'),
+                  item: S(r.chan === CHAN_CO2 ? 'STR_CHANNEL_NAME_CO2' : 'STR_CHANNEL_NAME_TEMP'),
+                  dir: S(r.rises ? 'STR_DIRECTION_NAME_UPTO' : 'STR_DIRECTION_NAME_BELOW'), value: num };
+    return S('STR_FMT_RELAY_SUMMARY').replace(/\{(act|item|dir|value)\}/g, function (m, k) { return parts[k]; });
+  }
+
+  /* 10-09(할 일 AG) — 시간 길이 표시(콘 fmt_duration과 같음: 1시간30분 / 1h30m), HH:MM, 타이머 요약 */
+  function fmtDur(sec) {
+    var u = S('STR_DUR_UNITS').split('\n'), h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, s = sec % 60, o = '';
+    if (h) o += h + u[0];
+    if (m) o += m + u[1];
+    if (s || (!h && !m)) o += s + u[2];
+    return o;
+  }
+  function fmtClock(min) { return ('0' + Math.floor(min / 60) % 24).slice(-2) + ':' + ('0' + min % 60).slice(-2); }
+  function timerSummary(t) {
+    var p = { on: fmtDur(t.on), off: fmtDur(t.off), non: fmtDur(t.non), noff: fmtDur(t.noff) };
+    return S(t.dn ? 'STR_FMT_RELAY_TIMER_DN_SUMMARY' : 'STR_FMT_RELAY_TIMER_SUMMARY').replace(/\{(noff|non|off|on)\}/g, function (m, k) { return p[k]; });
+  }
+
+  /* 11-18 — 원격은 여러 대(콘 relay_default_name과 같음: 자리 번호 = idx - 로컬 2개 + 1) */
+  function relayName(r) { return L(r, 'alias') || (r.remote ? fmt(S('STR_RELAY_REMOTE_NAME_FMT'), r.idx - 1) : fmt(S('STR_RELAY_DEFAULT_NAME_FMT'), r.idx + 1)); }
+  function renderRelays(list) {
+    /* 10-18(보릴 6단계) — 원격릴레이를 맨 위에, 전원 아이콘 옆에 신호 세기(보드 릴레이는 같은 폭 빈칸 — 이름 시작 맞춤).
+     * 원격릴레이는 보릴이 확인한 실제 상태만: 확인 전 "확인 중", 끊기면 "연결 끊김"(콘 refresh_power_control_panel과 같음) */
+    /* 11-18(사용자 결정) — 로컬(콘 출력 2개) 다음 원격(연결된 자리만, 서버가 거름). 소제목으로 나눔(콘과 같음) */
+    var sub = function (sid) { return '<div class="muted" style="font-size:12px;margin:6px 0 2px">' + esc(S(sid)) + '</div>'; };
+    var loc = list.filter(function (r) { return !r.remote; }), rem = list.filter(function (r) { return r.remote; });
+    $('relays').innerHTML = sub('STR_POWER_LOCAL') + loc.map(relayRow).join('') + (rem.length ? sub('STR_POWER_REMOTE') + rem.map(relayRow).join('') : '');
+  }
+  function relayRow(r) {
+    {
+      var on = r.remote ? (r.rst !== 0 && r.act) : r.on;
+      var sig = r.remote ? signalHtml({ rssi: r.rssi, near_orphan: r.rst === 0 || r.near, status: 'paired' })
+                         : '<span class="sig" style="visibility:hidden"><i></i><i></i><i></i><i></i><i></i></span>';
+      var val = r.remote && r.rst === 0 ? S('STR_RELAY_REMOTE_DISCONNECTED') : r.remote && r.rst === 1 ? S('STR_RELAY_REMOTE_PENDING') : relaySummary(r);
+      /* 10-18(사용자 지시) — 신호 왼쪽, 전원 오른쪽, 둘은 붙임 */
+      return '<div class="row tap" data-relay="' + r.idx + '">' + sig + '<span class="pw" style="color:' + (on ? 'var(--green)' : 'var(--grey)') +
+        ';padding:4px 8px 4px 2px;margin-left:-8px">&#x23FB;</span>' +
+        '<span>' + esc(relayName(r)) + '</span><span class="grow val" style="text-align:right">' + esc(val) + '</span>' +
+        '<span class="chev">&gt;</span></div>';
+    }
+  }
+
+  function sensorValues(n) {
+    if (!n.chans) return '';
+    return n.chans.filter(function (c) { return CHAN[c.type]; }).map(function (c) {
+      var tag = CHAN[c.type][0];
+      if (!c.ok) return tag + ':' + S('STR_SENSOR_VALUE_PENDING');
+      if (c.invalid) return tag + ':' + S('STR_SENSOR_VALUE_INVALID');
+      return tag + ': ' + (c.val === null ? '-' : Number(c.val).toFixed(2)) + S(CHAN[c.type][1]);
+    }).join(' ');
+  }
+
+  /* 촬영 주기 — 콘 format_capture_interval과 같게(값 목록 = ui_main.c s_capture_interval_values, 문구 = STR_OPT_CAPTURE_INTERVAL_LIST) */
+  var CAPTURE_VALUES = [0, 60, 600, 3600, 10800, 43200];   /* 10-09 — 콘 상용 주기와 같게 */
+  function captureText(sec) {
+    var i = CAPTURE_VALUES.indexOf(sec);
+    if (i < 0) return sec + 's';
+    return S('STR_OPT_CAPTURE_INTERVAL_LIST').split('\n')[i] || (sec + 's');
+  }
+
+  function renderSensors(nodes) {
+    var list = nodes.filter(function (n) { return n.kind === 'sens' && n.status !== 'waiting'; });
+    if (!list.length) { $('sens').innerHTML = '<div class="empty">' + esc(S('STR_PANEL_NO_SENSOR')) + '</div>'; return; }
+    $('sens').innerHTML = list.map(function (n) {
+      var head = nodeName(n) + ' / ' + S('STR_LABEL_MEASURE_TINY') + ' ' + n.interval_s + 's';
+      if (n.battery !== undefined) head += ' / ' + S('STR_LABEL_BATTERY_TINY') + ' ' + n.battery + '%';
+      var v = sensorValues(n);
+      return '<div class="row tap" data-dev="' + esc(n.mac) + '">' + signalHtml(n) + '<div class="grow"><div>' + esc(head) + '</div>' +
+        (v ? '<div class="val">' + esc(v) + '</div>' : '') + '</div><span class="chev">&gt;</span></div>';
+    }).join('');
+  }
+
+  function renderCams(nodes) {
+    var list = nodes.filter(function (n) { return n.kind === 'cam' && n.status !== 'waiting'; });
+    if (!list.length) { $('cams').innerHTML = '<div class="empty">' + esc(S('STR_PANEL_NO_CAMERA')) + '</div>'; return; }
+    /* 콘 주화면 카메라 행과 같게: "이름 / P 촬영주기 / Bat% / Automatic|Manual"(10-21), 상태는 신호 색으로만 */
+    $('cams').innerHTML = list.map(function (n) {
+      var t = nodeName(n) + ' / ' + S('STR_LABEL_CAPTURE_TINY') + ' ' + captureText(n.capture_s);
+      if (n.battery !== undefined) t += ' / ' + S('STR_LABEL_BATTERY_TINY') + ' ' + n.battery + '%';
+      t += ' / ' + S(n.auto_img ? 'STR_LABEL_IMG_AUTO_TINY' : 'STR_LABEL_IMG_MANUAL_TINY');   /* 10-21 — 자동 노출/색 */
+      return '<div class="row tap" data-dev="' + esc(n.mac) + '">' + signalHtml(n) + '<div class="grow">' + esc(t) + '</div><span class="chev">&gt;</span></div>';
+    }).join('');
+  }
+
+  function renderHeader(d) {
+    /* 콘 시계는 현지 시각을 그대로 초로 셈(타임존 없음) — UTC로 풀어야 콘 화면과 같은 값 */
+    $('net').textContent = (d.net.mode === 'ap' ? 'AP' : 'STA') + (d.net.ssid ? ' ' + d.net.ssid : '');
+    var col = d.status === 'error' ? 'var(--red)' : d.status === 'warning' ? 'var(--amber)' : 'var(--green)';
+    /* 정상 = 초록 원 안의 체크(사용자 선택 10-03), 경고·에러 = 노랑·빨강 삼각형 */
+    $('sicon').innerHTML = d.status === 'normal'
+      ? '<svg viewBox="0 0 24 24" width="22" height="22"><circle cx="12" cy="12" r="11" fill="' + col + '"/><path d="M6.5 12.5l3.5 3.5 7.5-8" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+      : '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 2 1 21h22z" fill="' + col + '"/><path d="M12 9v5M12 17v.5" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>';
+  }
+
+  /* 저장 공간 정리 안내 — 처음 받은 번호는 기준으로만 삼고, 그 뒤 번호가 바뀌면 콘 팝업과 같은 문구로 알림 */
+  var cleanupSeq = null;
+  function checkCleanup(c) {
+    if (!c) return;
+    if (cleanupSeq !== null && c.seq !== cleanupSeq) {
+      var names = ['STR_LABEL_PICTURE', 'STR_LABEL_MEASURE_SHORT'];
+      c.deleted.forEach(function (n, a) {
+        if (n > 0) alert(S('STR_TITLE_NOTICE') + '\n\n' + fmt(S('STR_MSG_STORAGE_CLEANUP'), S(names[a]), n));
+      });
+    }
+    cleanupSeq = c.seq;
+  }
+
+  var lastHeld = 0;   /* 10-15(SD 개선 4단계) — SD로 아직 안 옮긴 측정값 수(SD 조치 안내) */
+
+  /* 10-16(사용자 설계 — 백업은 폰 웹앱만 아는 곳에, 다른 기기로는 내보내기) — 통계 → [백업] 화면.
+   * 백업 = 콘에서 받아 이 웹앱 전용 저장소(IndexedDB)에 그대로 넣음 — 위치 고르기·다른 앱 없이(아이폰 홈 화면 웹앱은 파일 링크를 열면
+   * 돌아올 길 없는 미리보기로 넘어가고, 폴더를 웹이 정할 수 없음). 최근 BK_KEEP개만 남김.
+   * 복원 = 목록에서 골라 콘으로 올림. 내보내기 = 공유 시트(파일 앱·다른 앱, 다른 기기 보관용) — 공유를 못 하는 브라우저(PC)는 다운로드.
+   * 가져오기 = 내보낸 파일을 골라 이 저장소에 넣음. 웹앱을 지우면 이 저장소도 지워짐(화면에 안내) */
+  var BK_KEEP = 5;
+  var bk = { list: [] };
+  var CRC_T = null;
+  function crc32(u8) {
+    if (!CRC_T) {
+      CRC_T = new Uint32Array(256);
+      for (var n = 0; n < 256; n++) { var c = n; for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; CRC_T[n] = c >>> 0; }
+    }
+    var x = 0xFFFFFFFF;
+    for (var i = 0; i < u8.length; i++) x = CRC_T[(x ^ u8[i]) & 0xFF] ^ (x >>> 8);
+    return (x ^ 0xFFFFFFFF) >>> 0;
+  }
+  /* 콘 백업 파일인지(머리·크기·CRC) — 맞으면 {count, created}, 아니면 null */
+  function bkCheck(buf) {
+    if (!buf || buf.byteLength < 36) return null;
+    var v = new DataView(buf);
+    if (v.getUint32(0, true) !== 0x31425343 || v.getUint16(4, true) !== 1 || v.getUint16(6, true) !== 17) return null;
+    var count = v.getUint32(8, true);
+    if (buf.byteLength !== 32 + count * 17 + 4) return null;
+    if (crc32(new Uint8Array(buf, 32, count * 17)) !== v.getUint32(buf.byteLength - 4, true)) return null;
+    return { count: count, created: v.getUint32(12, true) };
+  }
+  function bkDb() {
+    return new Promise(function (ok, no) {
+      var r = indexedDB.open('cntl', 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore('backups', { keyPath: 'id', autoIncrement: true }); };
+      r.onsuccess = function () { ok(r.result); };
+      r.onerror = function () { no(r.error); };
+    });
+  }
+  function bkTx(mode, fn) {
+    return bkDb().then(function (db) {
+      return new Promise(function (ok, no) {
+        var tx = db.transaction('backups', mode), st = tx.objectStore('backups'), out = fn(st);
+        tx.oncomplete = function () { ok(out && out.result !== undefined ? out.result : out); };
+        tx.onerror = function () { no(tx.error); };
+      });
+    });
+  }
+  function bkLoadList() {
+    return bkTx('readonly', function (st) { return st.getAll(); }).then(function (all) {
+      bk.list = (all || []).map(function (b) { return { id: b.id, created: b.created, count: b.count, size: b.size }; })
+        .sort(function (a, b) { return b.created - a.created; });
+    });
+  }
+  function bkSave(buf, info) {
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist();   /* 저장 공간 정리 때 지우지 말라고 요청 */
+    return bkTx('readwrite', function (st) {
+      st.add({ created: info.created, count: info.count, size: buf.byteLength, data: buf });
+    }).then(bkLoadList).then(function () {   /* 최근 BK_KEEP개만 */
+      var old = bk.list.slice(BK_KEEP);
+      if (!old.length) return;
+      return bkTx('readwrite', function (st) { old.forEach(function (b) { st.delete(b.id); }); }).then(bkLoadList);
+    });
+  }
+  function bkGet(id) { return bkTx('readonly', function (st) { return st.get(id); }); }
+  function bkName(b) {
+    var t = new Date(b.created * 1000).toISOString();   /* 콘 시각 = 지역시각 그대로 */
+    return 'cntl-stats-' + t.substr(0, 10).replace(/-/g, '') + '-' + t.substr(11, 5).replace(':', '') + '.bin';
+  }
+  function bkWhen(t) { var s = new Date(t * 1000).toISOString(); return s.substr(0, 10) + ' ' + s.substr(11, 5); }
+
+  function openBackup() {
+    openSheet(renderBackup);
+    bkLoadList().then(function () { if (sheetRender === renderBackup) renderBackup(); }).catch(function () {});
+  }
+  /* 10-16(사용자 지시) — 첫 줄 한 줄로 "통계 백업: 3/5개 [지금 백업] [가져오기]"(몇 개까지 남는지 보이게, 최근 날짜는 안 씀), 그 아래 목록 */
+  function renderBackup() {
+    var h = '<div class="shead"><h3 class="grow">' + esc(S('STR_LABEL_BACKUP')) + '</h3><button class="xbtn" id="bkBack" aria-label="close">&#x2715;</button></div>';
+    h += '<div class="field"><label>' + esc(S('STR_LABEL_BACKUP') + ': ' + S('STR_FMT_BACKUP_STATUS').replace('%u', bk.list.length).replace('%u', BK_KEEP)) +
+         '</label><span><button class="small" id="bkNow">' + esc(S('STR_BTN_STATS_BACKUP')) + '</button> <button class="small" id="bkImp">' +
+         esc(S('STR_BTN_IMPORT')) + '</button></span></div>';
+    h += '<div class="field"><span class="sub">' + esc(S('STR_MSG_BACKUP_LOCAL_NOTE')) + '</span></div>';   /* 10-16(사용자 지시) — 안내는 목록 위 */
+    if (!bk.list.length) h += '<div class="field"><span class="sub">' + esc(S('STR_LABEL_BACKUP_LIST_EMPTY')) + '</span></div>';
+    bk.list.forEach(function (b) {
+      h += '<div class="field"><label>' + esc(bkWhen(b.created)) + ' <span class="sub">' + b.count + ' / ' + bytesHuman(b.size) + '</span></label><span>' +
+           '<button class="small" data-bkr="' + b.id + '">' + esc(S('STR_BTN_STATS_RESTORE')) + '</button> ' +
+           '<button class="small" data-bkx="' + b.id + '">' + esc(S('STR_BTN_EXPORT')) + '</button> ' +
+           '<button class="small danger" data-bkd="' + b.id + '">' + esc(S('STR_BTN_DELETE')) + '</button></span></div>';
+    });
+    $('sheetBody').innerHTML = h;
+    $('bkBack').onclick = openStats;
+    $('bkNow').onclick = backupNow;
+    $('bkImp').onclick = function () { $('restoreFile').value = ''; $('restoreFile').click(); };
+    $('restoreFile').onchange = function () { importBackup(this.files[0]); };
+    $('sheetBody').querySelectorAll('[data-bkr]').forEach(function (b) { b.onclick = function () { restoreFrom(+b.getAttribute('data-bkr')); }; });
+    $('sheetBody').querySelectorAll('[data-bkx]').forEach(function (b) { b.onclick = function () { exportBackup(+b.getAttribute('data-bkx')); }; });
+    $('sheetBody').querySelectorAll('[data-bkd]').forEach(function (b) {
+      b.onclick = function () {
+        if (!confirm(S('STR_MSG_BACKUP_DELETE_CONFIRM'))) return;
+        bkTx('readwrite', function (st) { st.delete(+b.getAttribute('data-bkd')); }).then(bkLoadList).then(renderBackup);
+      };
+    });
+  }
+  function backupNow() {
+    busyStart('LOADING');
+    return xfetch('api/stats/backup', { credentials: 'same-origin', cache: 'no-store' }).then(function (r) {
+      if (r.status === 401) { show('login'); throw { handled: true }; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.arrayBuffer();
+    }).then(function (buf) {
+      var info = bkCheck(buf);
+      if (!info) throw new Error('bad');
+      return bkSave(buf, info).then(function () {
+        busyEnd();
+        toast(S('STR_MSG_BACKUP_SAVED').replace('%u', info.count));
+        renderBackup();
+      });
+    }).catch(function (e) {
+      busyEnd();
+      if (e && e.handled) return;
+      alert(S('STR_MSG_RESTORE_FAIL').replace('%s', 'backup'));
+    });
+  }
+  function restoreFrom(id) {
+    if (!confirm(S('STR_MSG_RESTORE_CONFIRM'))) return;
+    return bkGet(id).then(function (b) {
+      if (!b || !bkCheck(b.data)) { alert(S('STR_MSG_BACKUP_BAD_FILE')); return; }
+      busyStart('LOADING');
+      return xfetch('api/stats/restore', { method: 'POST', body: b.data, credentials: 'same-origin', headers: { 'Content-Type': 'application/octet-stream' } })
+        .then(function (r) { return r.json(); })
+        .then(restorePoll)
+        .catch(function () { busyEnd(); alert(S('STR_MSG_RESTORE_FAIL').replace('%s', 'upload')); });
+    });
+  }
+  function restorePoll(s) {
+    if (s.state === 'running' || s.state === 'uploading') {
+      setTimeout(function () { api('api/stats/restore').then(restorePoll).catch(function () { restorePoll(s); }); }, 2000);
+      return;
+    }
+    busyEnd();
+    if (s.state === 'done') alert(S('STR_MSG_RESTORE_DONE').replace('%u', s.added).replace('%u', s.dup));
+    else alert(S('STR_MSG_RESTORE_FAIL').replace('%s', s.msg || s.state));
+  }
+  function exportBackup(id) {
+    bkGet(id).then(function (b) {
+      if (!b) return;
+      var name = bkName(b);
+      var file = new File([b.data], name, { type: 'application/octet-stream' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file], title: name }).catch(function () {});   /* 공유 시트(파일에 저장·다른 앱) */
+        return;
+      }
+      var url = URL.createObjectURL(file), a = document.createElement('a');   /* PC — 다운로드 폴더로 */
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+    });
+  }
+  function importBackup(f) {
+    if (!f) return;
+    return f.arrayBuffer().then(function (buf) {
+      var info = bkCheck(buf);
+      if (!info) { alert(S('STR_MSG_BACKUP_BAD_FILE')); return; }
+      return bkSave(buf, info).then(function () { toast(S('STR_MSG_BACKUP_SAVED').replace('%u', info.count)); renderBackup(); });
+    }).catch(function () { alert(S('STR_MSG_BACKUP_BAD_FILE')); });
+  }
+
+  function render(d) {
+    lastHeld = d.held || 0;
+    checkCleanup(d.cleanup);
+    checkAlarms(d.alarm);
+    recAutoRefresh(d.rec);   /* 10-09 — 기록 표를 맨 앞 페이지로 보고 있으면 새 기록이 들어올 때 다시 받음 */
+    photoAutoRefresh(d.ph);  /* 10-21 — 카메라 팝업이 열려 있으면 사진이 들어오거나 지워질 때 목록을 다시 받음 */
+    syncCamStatus(d.nodes);   /* 10-05 — 카메라 팝업이 열려 있으면 지금 촬영 버튼도 바로 */
+    renderHeader(d);
+    renderSummary(d);
+    checkBridgeAsk(d.brq);   /* 11-18 — 모르는 브릿지(콘 팝업과 같음) */
+    renderRelays(d.relays || []);
+    renderSensors(d.nodes || []);
+    renderCams(d.nodes || []);
+  }
+
+  /* 2026-11-18(사용자 결정) — 브릿지 번호를 콘이 정함. 모르는 브릿지는 콘과 웹 모두 묻고, 먼저 고른 쪽이 정함(다른 쪽 팝업은 닫힘).
+   * 그 브릿지는 초록 LED가 빠르게 깜빡임. 제안 번호(sug) 단추만 파랑. 닫기 없음(골라야 그 브릿지가 동작함) */
+  var brAskMac = null;
+  function macColon(m) { return m.replace(/(..)(?!$)/g, '$1:'); }
+  function checkBridgeAsk(q) {
+    if (!q) {
+      if (brAskMac) { brAskMac = null; $('modal').classList.add('hidden'); $('modal').onclick = null; }
+      return;
+    }
+    if (brAskMac === q.mac) return;
+    if (!brAskMac && !$('modal').classList.contains('hidden')) return;   /* 다른 확인창이 떠 있으면 다음 갱신에 */
+    brAskMac = q.mac;
+    var btn = function (i, sid) {
+      return '<button data-bi="' + i + '"' + (q.sug === i ? ' class="primary"' : '') + '>' + esc(S(sid)) + '</button>';
+    };
+    $('modalBox').innerHTML = '<div class="mtitle" style="background:var(--blue);color:#fff">' + esc(S('STR_TITLE_BRIDGE_NEW')) + '</div>' +
+      '<div style="padding:14px;white-space:pre-line">' + esc(fmt(S('STR_MSG_BRIDGE_ASK_FMT'), macColon(q.mac))) + '</div>' +
+      '<div class="sfoot" style="flex-wrap:wrap">' + btn(0, 'STR_BTN_BRIDGE_1') + btn(1, 'STR_BTN_BRIDGE_2') + '</div>';
+    $('modal').classList.remove('hidden');
+    $('modal').onclick = function (ev) {
+      var m = ev.target.closest('[data-bi]');
+      if (!m) return;
+      var mac = brAskMac;
+      brAskMac = null;
+      $('modal').classList.add('hidden');
+      $('modal').onclick = null;
+      post('api/bridge/assign?mac=' + mac + '&idx=' + m.getAttribute('data-bi')).catch(function () { toast('Error'); });
+    };
+  }
+
+  /* 브릿지 줄을 누름 — 번호·안테나·MAC·상태, 다시 정하기(콘 cb_bridge_row_tap과 같음) */
+  function openBridgeInfo(i) {
+    if (!last || !last.bridges || !last.bridges[i] || brAskMac) return;
+    var b = last.bridges[i];
+    var bst = ['STR_BRIDGE_STATE_OK', 'STR_BRIDGE_STATE_SETTING', 'STR_BRIDGE_STATE_NORESP', 'STR_BRIDGE_STATE_ABSENT'];
+    var st = S(last.canerr ? 'STR_BRIDGE_STATE_CANERR' : bst[b.st]);
+    var txt = fmt(S('STR_MSG_BRIDGE_INFO_FMT'), i + 1, S(i === 0 ? 'STR_BRIDGE_ANT_IN' : 'STR_BRIDGE_ANT_OUT'), b.mac ? macColon(b.mac) : '-', st);
+    $('modalBox').innerHTML = '<div class="mtitle" style="background:var(--blue);color:#fff">' + esc(S('STR_TITLE_BRIDGE')) + '</div>' +
+      '<div style="padding:14px;white-space:pre-line">' + esc(txt) + '</div>' +
+      '<div class="sfoot"><button data-m="no">' + esc(S('STR_BTN_CLOSE')) + '</button>' +
+      (b.mac ? '<button data-m="re">' + esc(S('STR_BTN_BRIDGE_REASSIGN')) + '</button>' : '') + '</div>';
+    $('modal').classList.remove('hidden');
+    $('modal').onclick = function (ev) {
+      var m = ev.target.closest('[data-m]');
+      if (!m) return;
+      $('modal').classList.add('hidden');
+      $('modal').onclick = null;
+      if (m.getAttribute('data-m') !== 're' || !confirm(S('STR_MSG_BRIDGE_REASSIGN_CONFIRM'))) return;
+      post('api/bridge/release?idx=' + i).catch(function () { toast('Error'); });
+    };
+  }
+
+  function onDash(d) {
+    if (view !== 'main') show('main');
+    last = d;
+    render(d);
+    $('conn').textContent = '';
+    $('conn').className = '';
+  }
+
+  /* 처음 열 때·팝업을 닫을 때·WebSocket이 끊겼을 때 한 번 받아 옴. WebSocket이 붙어 있으면 그것으로 끝, 아니면 5초 뒤 다시 */
+  function poll() {
+    api('api/dashboard')
+      .then(function (d) {
+        onDash(d);
+        wsStart();
+        schedule();
+      })
+      .catch(function (e) {
+        if (e && e.handled) return;
+        $('conn').textContent = Wt('OFFLINE');
+        $('conn').className = 'bad';
+        schedule();
+      });
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    if (!document.hidden && view === 'main' && !wsOk) timer = setTimeout(poll, POLL_MS);
+  }
+
+  /* ── WebSocket(10-05 사용자 지시 — 5초 조회 대신): 콘이 바뀐 것이 있을 때 주화면 내용을 밀어 줌. 5초마다 "hb"로 웹 세션 유지
+   *    (휴대폰이 잠기면 hb가 끊겨 콘이 20초 뒤 세션을 끝내고 알림을 ntfy로 넘김). 끊기면 5초 조회로 돌아가고 10초 뒤 다시 붙음 ── */
+  var ws = null, wsOk = false, hbTimer = null, wsNextTry = 0;
+  function wsUrl() {
+    return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname.replace(/[^\/]*$/, '') + 'ws';
+  }
+  function wsStart() {
+    if (REMOTE || ws || document.hidden || view !== 'main' || Date.now() < wsNextTry || !window.WebSocket) return;   /* 원격은 5초 조회 */
+    wsNextTry = Date.now() + 10000;
+    try { ws = new WebSocket(wsUrl()); } catch (e) { ws = null; return; }
+    ws.onopen = function () {
+      wsOk = true;
+      clearTimeout(timer);
+      try { ws.send('hb'); } catch (e) {}   /* 콘은 첫 hb를 받을 때 이 연결을 등록하고 첫 내용을 보냄 */
+      hbTimer = setInterval(function () { try { ws.send('hb'); } catch (e) {} }, 5000);
+    };
+    ws.onmessage = function (ev) {
+      var d;
+      try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.error === 'local') { wsStop(); show('local'); return; }
+      if (d.error === 'restoring') { wsStop(); show('restore'); return; }
+      onDash(d);
+    };
+    ws.onclose = ws.onerror = function () {
+      var was = wsOk;
+      wsStop();
+      if (view === 'main' && !document.hidden) { if (was) poll(); else schedule(); }
+    };
+  }
+  function wsStop() {
+    clearInterval(hbTimer);
+    if (ws) { ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null; try { ws.close(); } catch (e) {} }
+    ws = null;
+    wsOk = false;
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) { clearTimeout(timer); wsStop(); }
+    else if (view === 'main' || view === '') { wsNextTry = 0; poll(); }
+  });
+
+  $('loginView').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    $('loginMsg').textContent = '';
+    xfetch('api/login', { method: 'POST', body: $('pw').value, credentials: 'same-origin', cache: 'no-store', headers: { 'Content-Type': 'text/plain' } })
+      .then(function (r) {
+        if (r.status === 429) throw new Error('locked');
+        if (!r.ok) throw new Error('login');
+        $('pw').value = '';
+        $('pw').type = 'password';
+        $('pwEyeSlash').style.display = '';
+        show('main');
+        poll();
+      })
+      .catch(function (e) { $('loginMsg').textContent = Wt(e.message === 'locked' ? 'LOGIN_LOCKED' : 'LOGIN_FAILED'); });
+  });
+
+  /* 비밀번호 보기/숨기기(눈 아이콘) — 사선이 있으면 숨김 상태 */
+  $('pwEye').addEventListener('click', function () {
+    var shown = $('pw').type === 'password';
+    $('pw').type = shown ? 'text' : 'password';
+    $('pwEyeSlash').style.display = shown ? 'none' : '';
+    $('pw').focus();
+  });
+
+  $('reclaimBtn').addEventListener('click', function () {
+    api('api/session/claim', { method: 'POST' }).then(function () { show('main'); poll(); }).catch(function () {});
+  });
+
+  $('setBtn').addEventListener('click', function () { if (view === 'main') openSettings(); });
+  $('alarmBtn').addEventListener('click', function () { if (view === 'main') openAlarms(); });
+  $('sicon').addEventListener('click', function () { if (view === 'main') openErrors(); });
+  [0, 1].forEach(function (i) { $('sumBr' + i).addEventListener('click', function () { if (view === 'main') openBridgeInfo(i); }); });   /* 11-18 */   /* 콘: 상태 아이콘 → 에러·경고 목록 */
+
+  function setLang(l) {
+    lang = l;
+    try { localStorage.setItem('lang', lang); } catch (e) {}
+    applyTexts();   /* 떠 있는 팝업도 다시 그림 */
+  }
+
+  /* ── 공통: 토스트, 시트 ── */
+  var toastTimer = null;
+  function toast(msg, alarm) {
+    var el = $('toast');
+    el.textContent = msg;
+    el.classList.toggle('alarm', !!alarm);
+    el.classList.remove('hidden');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.classList.add('hidden'); }, alarm ? 4000 : 2500);
+  }
+  var sheetRender = null;   /* 언어가 바뀌면 다시 그리기 */
+  /* 10-03(사용자 지시 — 주화면과 모든 팝업에서 뒤로·앞으로 이동 막기) — 브라우저 기록 맨 위에 늘 "막이" 한 칸을 둠.
+   * 뒤로 가기를 누르면 그 칸이 빠지며 popstate가 오는데, 그때 떠 있는 것(전체 화면 보기 > 확인창·롤러 > 팝업) 하나만 닫고
+   * 막이 칸을 다시 쌓음 — 페이지는 떠나지 않음. 다시 쌓으면 앞쪽 기록이 지워져 앞으로 가기도 할 곳이 없음 */
+  history.replaceState({ base: 1 }, '');
+  history.pushState({ guard: 1 }, '');
+  window.addEventListener('popstate', function () {
+    if (!$('viewer').classList.contains('hidden')) { $('viewer').classList.add('hidden'); $('viewerImg').src = ''; }
+    else if (!$('modal').classList.contains('hidden')) {
+      var no = $('modalBox').querySelector('[data-m="no"]');   /* 확인창·롤러는 "아니오/취소"와 같게 닫음 */
+      if (no) no.click(); else $('modal').classList.add('hidden');
+    }
+    else if (sheetRender) realCloseSheet();
+    history.pushState({ guard: 1 }, '');
+  });
+  function openSheet(renderFn) {
+    sheetRender = renderFn;
+    $('sheetBody').className = 'sbody';   /* 팝업마다 배치가 다를 수 있음(카메라 = cam) */
+    $('sheet').classList.remove('hidden');
+    renderFn();
+  }
+  function realCloseSheet() {
+    sheetRender = null;
+    $('sheet').classList.add('hidden');
+    $('sheetBody').innerHTML = '';
+    $('modal').classList.add('hidden');   /* 팝업 위의 확인창·롤러도 같이 닫음 */
+    $('modal').onclick = null;
+    $('viewer').classList.add('hidden');  /* 전체 화면 보기도 같이 */
+    clearInterval(camTimer);
+    clearInterval(statsTimer);
+    clearInterval(setTimer);
+    clearInterval(logTimer);
+    poll();
+    setTimeout(fixZoom, 100);
+  }
+  function closeSheet() { realCloseSheet(); }
+  function sheetHead(titleKey) {
+    return '<div class="shead"><h3>' + esc(S(titleKey)) + '</h3><button class="xbtn" data-act="close" aria-label="close">&#x2715;</button></div>';
+  }
+  function optionsHtml(listKey, values, current) {
+    var labels = S(listKey).split('\n');
+    return values.map(function (v, i) {
+      return '<option value="' + v + '"' + (v === current ? ' selected' : '') + '>' + esc(labels[i] || String(v)) + '</option>';
+    }).join('');
+  }
+  /* 10-21 — 수동값 표시(콘 man_value_text와 같음): 0 노출 줄, 1 게인 ×16, 2~4 AWB ×1024 */
+  function manText(i, v) {
+    if (i === 0) return String(v);
+    return (Math.round(v * 100 / (i === 1 ? 16 : 1024)) / 100).toFixed(2);
+  }
+
+  function toggleHtml(id, on) {
+    return '<label class="tg"><input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + '><span></span></label>';
+  }
+  function post(path, body) {
+    return api(path, { method: 'POST', body: body || '', headers: { 'Content-Type': 'text/plain' } });
+  }
+
+  /* ── 장치 팝업(콘 build_device_popup과 같은 항목). 선택지는 바꾸는 즉시 저장, 별명만 Apply(콘 규칙) ── */
+  var dev = null;
+  function openDevice(mac) {
+    api('api/device?mac=' + mac).then(function (d) { dev = d; openSheet(renderDevice); }).catch(function () {});
+  }
+  function renderDevice() {
+    var d = dev, cam = d.kind === 'cam';
+    var h = sheetHead(cam ? 'STR_GROUP_CAMERA' : 'STR_GROUP_SENSOR');
+    h += '<div class="field"><span class="sub">' + esc(d.name) + '</span></div>';
+    h += '<div class="field"><label for="dAlias">' + esc(S('STR_LABEL_ALIAS')) + '</label>' +
+         '<input type="text" id="dAlias" maxlength="' + d.alias_max + '" value="' + esc(d.alias) + '">' +
+         '<button id="dAliasApply" class="primary" disabled>' + esc(S('STR_BTN_APPLY')) + '</button></div>';
+    /* 2026-11-14(사용자 결정) — 별명 길이 안내 + 콘 화면에 보일 글자(로마자) 미리보기 */
+    h += '<div class="field"><span class="sub" id="dAliasHint"></span></div>';
+    if (cam) {
+      h += '<div class="field"><label>' + esc(S('STR_LABEL_CAPTURE_INTERVAL')) + '</label><select id="dCapture">' +
+           optionsHtml('STR_OPT_CAPTURE_INTERVAL_LIST', d.opt_capture, d.capture_s) + '</select></div>';
+      h += '<div class="field"><label>' + esc(S('STR_LABEL_XCLK')) + '</label><select id="dXclk">' +
+           optionsHtml('STR_OPT_XCLK_LIST', d.opt_xclk, d.xclk) + '</select></div>';
+      /* 10-21 — 자동 노출/색(AGC·AEC·AWB 함께), 끄면 수동값(콘 장치 팝업과 같음, 표시는 배율·줄) */
+      h += '<div class="field"><label>' + esc(S('STR_LABEL_AUTO_IMAGE')) + '</label>' + toggleHtml('dAuto', d.auto_img) + '</div>';
+      /* 수동값 — 릴레이 값처럼 값 버튼을 누르면 롤러, 확인하면 바로 저장. 첫 줄 노출·게인, 둘째 줄 AWB R·G·B */
+      function mb(i) { return '<button class="vbtn" data-man="' + i + '">' + manText(i, d.man[i]) + '</button>'; }
+      h += '<div id="dManBox"' + (d.auto_img ? ' hidden' : '') + '>' +
+           '<div class="field"><label>' + esc(S('STR_LABEL_MAN_EXPOSURE')) + '</label>' + mb(0) +
+           '<label>' + esc(S('STR_LABEL_MAN_GAIN')) + '</label>' + mb(1) + '</div>' +
+           '<div class="field"><label>' + esc(S('STR_LABEL_MAN_AWB')) + '</label>' +
+           esc(S('STR_LABEL_MAN_AWB_R')) + mb(2) + esc(S('STR_LABEL_MAN_AWB_G')) + mb(3) + esc(S('STR_LABEL_MAN_AWB_B')) + mb(4) + '</div></div>';
+      h += '<div class="field"><label>' + esc(S('STR_LABEL_LIGHT_TEST')) + '</label>' + toggleHtml('dLight', !!d.light) + '</div>';
+    } else {
+      h += '<div class="field"><label>' + esc(S('STR_LABEL_SENS_MEASURE_INTERVAL')) + '</label><select id="dInterval">' +
+           optionsHtml('STR_OPT_SENS_MEASURE_INTERVAL_LIST', d.opt_interval, d.interval_s) + '</select></div>';
+    }
+    /* 10-13 — SCD41 센서면 맨 아래 줄 왼쪽에 보정 초기화(콘 센서 팝업과 같은 배치) */
+    h += '<div class="sfoot">' + (!cam && d.calib ? '<button id="dCalib">' + esc(S('STR_BTN_CALIB_RESET')) + '</button><span class="grow"></span>' : '') +
+         '<button id="dUnpair" class="danger">' + esc(S('STR_BTN_DISCONNECT')) + '</button></div>';
+    $('sheetBody').innerHTML = h;
+
+    function setKey(key, val) {
+      return post('api/device/set?mac=' + d.mac + '&key=' + key + '&val=' + val)
+        .then(function () { toast(S('STR_BTN_APPLY') + ' \u2713'); })
+        .catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+    }
+    var alias = $('dAlias'), apply = $('dAliasApply'), hint = $('dAliasHint');
+    function aliasCheck() {
+      var ok = aliasFits(alias.value);
+      hint.textContent = S(ok ? 'STR_HINT_ALIAS_LEN_WEB' : 'STR_MSG_ALIAS_TOO_LONG') + ' · ' + S('STR_LABEL_ALIAS_PREVIEW') + ': ' + (romanize(alias.value) || d.name);
+      hint.style.color = ok ? '' : 'var(--red, #e53935)';
+      apply.disabled = alias.value === d.alias || !ok;
+    }
+    aliasCheck();
+    alias.addEventListener('input', aliasCheck);
+    apply.addEventListener('click', function () {
+      post('api/device/set?mac=' + d.mac + '&key=alias', alias.value)
+        .then(function () { d.alias = alias.value; apply.disabled = true; toast(S('STR_BTN_APPLY') + ' \u2713'); })
+        .catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+    });
+    if (cam) {
+      $('dCapture').addEventListener('change', function () { d.capture_s = +this.value; setKey('capture', this.value); });
+      $('dAuto').addEventListener('change', function () {
+        d.auto_img = this.checked;
+        $('dManBox').hidden = this.checked;
+        setKey('auto_img', this.checked ? 1 : 0);
+      });
+      [].forEach.call(document.querySelectorAll('[data-man]'), function (btn) {
+        btn.addEventListener('click', function () {
+          var i = +btn.getAttribute('data-man');
+          openManRoller(i, d.man[i], function (raw) {
+            var nv = d.man.slice();
+            nv[i] = raw;
+            post('api/device/set?mac=' + d.mac + '&key=manual', nv.join(','))
+              .then(function () { d.man = nv; btn.textContent = manText(i, raw); toast(S('STR_BTN_APPLY') + ' \u2713'); })
+              .catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+          });
+        });
+      });
+      $('dXclk').addEventListener('change', function () { d.xclk = +this.value; setKey('xclk', this.value); });
+      $('dLight').addEventListener('change', function () { setKey('light', this.checked ? 1 : 0); });
+    } else {
+      $('dInterval').addEventListener('change', function () { d.interval_s = +this.value; setKey('interval', this.value); });
+      if ($('dCalib')) $('dCalib').addEventListener('click', function () {   /* 10-13 — 콘 cb_sens_calib_reset_clicked와 같음 */
+        if (!confirm((d.alias || d.name) + '\n' + S('STR_MSG_CALIB_RESET_CONFIRM'))) return;
+        post('api/device/set?mac=' + d.mac + '&key=calib_reset&val=1')
+          .then(function () { toast(S('STR_MSG_CALIB_RESET_QUEUED')); })
+          .catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+      });
+    }
+    $('dUnpair').addEventListener('click', function () {
+      if (!confirm((d.alias || d.name) + '\n' + S('STR_MSG_UNPAIR_CONFIRM'))) return;
+      post('api/device/unpair?mac=' + d.mac).then(closeSheet).catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+    });
+  }
+
+  var RELEASE_VALUES = [0, 600, 1800, 3600, 10800];   /* 10-09 — 콘 s_manual_release_values와 같음(STR_OPT_MANUAL_RELEASE_LIST 순서) */
+  /* ── 릴레이 팝업(콘 build_relay_popup과 같은 항목·규칙) — 10-09(사용자 설계): 값은 전부 Apply로만 반영(바뀐 게 있을 때만 켜짐),
+   *    별명은 따로 Apply. 11-12(사용자 설계) — 맨 위 강제(해제/켬/끔 + 자동 해제)는 방식과 따로(상태 위에 얹힘), 방식 = 미설정 / 타이머 /
+   *    센서 AI / 센서 수동(강제가 풀리면 돌아갈 상태). 미설정·타이머일 때 숨은 칸 값은 연 시점 값으로 보냄(바뀐 것으로 안 침) ── */
+  var rl = null, rlSnap = null;
+  function rlMode(f) { return !f.act ? 0 : (f.tm ? 1 : (f.ai ? 2 : 3)); }
+  function rlForm() {   /* 화면 선택값 → 서버로 보낼 본문 */
+    var f = rl.form, m = rlMode(f), sn = (m >= 2) ? f : rl.sb, t = (m === 1) ? f.t : rl.tb;
+    return ['act=' + (f.act ? 1 : 0), 'chan=' + sn.chan, 'y=' + (sn.y ? 1 : 0), 'z=' + (sn.z ? 1 : 0), 'center=' + sn.center, 'margin=' + sn.margin,
+            'ai=' + (f.ai ? 1 : 0), 'manual=' + (f.manual ? 1 : 0),
+            'mon=' + (f.manual ? (f.mon ? 1 : 0) : (rl.base.mon ? 1 : 0)), 'rel=' + (f.manual ? f.rel : rl.base.rel), 'src=' + sn.src, 'gc=' + sn.gc, 'dev=' + (sn.dev || ''),
+            'stat=' + sn.stat, 'trend=' + (sn.trend ? 1 : 0), 'ts=' + sn.ts, 'hold=' + sn.hold,
+            'tm=' + (f.tm ? 1 : 0), 'ton=' + t.on, 'toff=' + t.off, 'tdn=' + (t.dn ? 1 : 0), 'tds=' + t.ds, 'tns=' + t.ns,
+            'tnon=' + t.non, 'tnoff=' + t.noff].join('&');
+  }
+  function rlKeepBase() {   /* 연 시점(또는 적용한) 센서·타이머 칸 값 — 숨은 칸은 이 값으로 보냄 */
+    var f = rl.form;
+    rl.sb = JSON.parse(JSON.stringify({ chan: f.chan, y: f.y, z: f.z, center: f.center, margin: f.margin, src: f.src, gc: f.gc, dev: f.dev,
+                                        stat: f.stat, trend: f.trend, ts: f.ts, hold: f.hold }));
+    rl.tb = JSON.parse(JSON.stringify(f.t));
+  }
+  function rlChan(type) { return rl.data.chans.filter(function (c) { return c.type === type; })[0] || rl.data.chans[0]; }
+  function rlSpec() {   /* 값 범위 — 온도 그룹이면 기본/정밀 선택대로, 장치면 정밀(서버가 실제 센서 사양으로 다시 자름) */
+    var f = rl.form, ch = rlChan(f.chan);
+    var fine = f.src === 1 ? true : (f.chan === 1 && f.gc === 1);
+    return ch.spec[fine ? 1 : 0];
+  }
+  function openRelay(idx) {
+    api('api/relay?idx=' + idx).then(function (d) {
+      var devs = rlChanDevices(d, d.chan);
+      rl = { data: d, form: { chan: d.chan, y: d.y, z: d.z, center: d.center, margin: d.margin, ai: d.ai, manual: d.manual, src: d.src,
+                              gc: d.gc, dev: devs.some(function (x) { return x.mac === d.dev; }) ? d.dev : (devs[0] ? devs[0].mac : ''),
+                              stat: d.stat, trend: d.trend, ts: d.ts, hold: d.hold,
+                              tm: d.timer.mode, t: { on: d.timer.on, off: d.timer.off, dn: d.timer.dn, ds: d.timer.ds, ns: d.timer.ns,
+                                                     non: d.timer.non, noff: d.timer.noff },
+                              mon: d.manual ? d.manual_on : false, rel: d.manual ? (d.rel || 0) : 0,
+                              act: d.active, chosen: d.configured }, alias: d.alias };   /* 11-12 — 설정됨 / 센서 조건 입력한 적 있음(2-2) */
+      rl.base = { tm: rl.form.tm, ai: rl.form.ai, mon: rl.form.mon, rel: rl.form.rel };   /* 적용된 값 — 미설정을 고르면 마지막 방식은 이대로 둠(콘과 같음) */
+      rlKeepBase();
+      rlSnap = rlForm();
+      openSheet(renderRelay);
+    }).catch(function () {});
+  }
+  function rlChanDevices(d, type) { var c = d.chans.filter(function (x) { return x.type === type; })[0]; return c ? c.devices : []; }
+  function sel(id, listKey, values, cur, extra) {
+    var labels = S(listKey).split('\n');
+    return '<select id="' + id + '"' + (extra || '') + '>' + values.map(function (v, i) {
+      return '<option value="' + v + '"' + (v === cur ? ' selected' : '') + '>' + esc(labels[i] || String(v)) + '</option>';
+    }).join('') + '</select>';
+  }
+  function renderRelay() {
+    var d = rl.data, f = rl.form, sp = rlSpec(), dec = sp[3];
+    var unit = S(f.chan === 3 ? 'STR_UNIT_CO2' : 'STR_UNIT_TEMP');
+    var name = d.alias || (d.remote ? fmt(S('STR_RELAY_REMOTE_NAME_FMT'), d.idx - 1) : fmt(S('STR_RELAY_DEFAULT_NAME_FMT'), d.idx + 1));
+    var h = sheetHead('STR_PANEL_POWER_CONTROL');
+    h += '<div class="field"><label for="rAlias">' + esc(S('STR_LABEL_ALIAS')) + '</label><input type="text" id="rAlias" maxlength="' + d.alias_max +
+         '" value="' + esc(rl.alias) + '" placeholder="' + esc(name) + '"><button id="rAliasApply" class="primary" disabled>' + esc(S('STR_BTN_APPLY')) + '</button></div>';
+    /* 10-18(보릴 6단계) — 원격릴레이만: 통신이 끊기면 보릴이 이 시간 뒤 끔(고르면 바로 저장 — 콘 팝업과 같음) */
+    if (d.remote) h += '<div class="field"><label>' + esc(S('STR_LABEL_REMOTE_FAILSAFE')) + '</label>' + sel('rFs', 'STR_OPT_REMOTE_FAILSAFE_LIST', [1, 10, 30, 60], d.fs) + '</div>' +
+      '<div class="field"><button id="rUnpair">' + esc(S('STR_BTN_DISCONNECT')) + '</button></div>';   /* 11-18 — 원격 기기 연결 끊기(콘과 같음) */
+    /* 11-12(사용자 설계) — 맨 위: 강제(해제 / 켬 / 끔) + 자동 해제(강제일 때만). 그 아래: 방식(미설정 / 타이머 / 센서 AI / 센서 수동) + 적용 */
+    h += '<div class="field"><label>' + esc(S('STR_LABEL_MANUAL_MODE')) + '</label>' + sel('rOvr', 'STR_OPT_OVERRIDE_LIST', [0, 1, 2], !f.manual ? 0 : (f.mon ? 1 : 2)) +
+         '<label style="text-align:right">' + esc(S('STR_LABEL_MANUAL_RELEASE')) + '</label>' +
+         sel('rRel', 'STR_OPT_MANUAL_RELEASE_LIST', RELEASE_VALUES, f.manual ? f.rel : rl.base.rel, f.manual ? '' : ' disabled') + '</div>';
+    var mode = rlMode(f);
+    h += '<div class="field"><label>' + esc(S('STR_LABEL_RELAY_MODE')) + '</label>' +
+         sel('rMode', 'STR_OPT_RELAY_MODE_LIST', [0, 1, 2, 3], mode) +
+         '<button id="rApply" class="primary" disabled>' + esc(S('STR_BTN_APPLY')) + '</button></div>';
+    if (mode === 0) {   /* 미설정 — 조건·타이머 칸 없음 */
+      $('sheetBody').innerHTML = h;
+      bindRelay();
+      rlDirty();
+      return;
+    }
+    h += '<div class="grayp">';
+    /* 입력 칸은 언어와 상관없이 같은 배치(사용자 결정): 동작 / 항목 / 조건 */
+    if (f.tm) {   /* 10-09(할 일 AG) — 방식 = 타이머: 동작·항목·조건·고급 대신 타이머 칸(콘 relay_build_timer_box와 같은 배치) */
+      var t = f.t;
+      function tb(key, txt) { return '<button class="vbtn" data-troll="' + key + '">' + esc(txt) + '</button>'; }
+      h += '<div class="field"><label>' + esc(S(t.dn ? 'STR_LABEL_DAY_ON' : 'STR_LABEL_TIMER_ON')) + '</label>' + tb('on', fmtDur(t.on)) +
+           '<label style="text-align:right">' + esc(S(t.dn ? 'STR_LABEL_DAY_OFF' : 'STR_LABEL_TIMER_OFF')) + '</label>' + tb('off', fmtDur(t.off)) + '</div>';
+      h += '<div class="field"><label>' + esc(S('STR_LABEL_DAY_NIGHT')) + '</label>' + toggleHtml('rDn', t.dn) + '</div>';
+      if (t.dn) {
+        h += '<div class="field"><label>' + esc(S('STR_LABEL_DAY_START')) + '</label>' + tb('ds', fmtClock(t.ds)) +
+             '<label style="text-align:right">' + esc(S('STR_LABEL_NIGHT_START')) + '</label>' + tb('ns', fmtClock(t.ns)) + '</div>';
+        h += '<div class="field"><label>' + esc(S('STR_LABEL_NIGHT_ON')) + '</label>' + tb('non', fmtDur(t.non)) +
+             '<label style="text-align:right">' + esc(S('STR_LABEL_NIGHT_OFF')) + '</label>' + tb('noff', fmtDur(t.noff)) + '</div>';
+      }
+      h += '</div>';
+      $('sheetBody').innerHTML = h;
+      bindRelay();
+      rlDirty();
+      return;
+    }
+    h += '<div class="field"><label>' + esc(S('STR_LABEL_RELAY_ACTION')) + '</label>' + sel('rZ', 'STR_OPT_TURN_ACTION_LIST', [1, 0], f.z ? 1 : 0) + '</div>';
+    /* 11-12(2-2) — 센서 조건을 입력한 적 없으면 채널부터 고름("선택"), 그 전엔 값 칸 비움·적용 안 됨(콘과 같음) */
+    var chanSel = sel('rChan', 'STR_OPT_CHAN_TYPE_LIST', d.chans.map(function (c) { return c.type; }), f.chosen ? f.chan : null);
+    if (!f.chosen) chanSel = chanSel.replace('>', '><option value="" selected disabled>' + esc(S('STR_RELAY_CHOOSE_CHAN')) + '</option>');
+    h += '<div class="field"><label>' + esc(S('STR_LABEL_RELAY_ITEM')) + '</label>' + chanSel + '</div>';
+    h += '<div class="sent"><span class="grow">' + esc(S('STR_LABEL_RELAY_CONDITION')) + '</span>' + sel('rY', 'STR_OPT_RISE_FALL_LIST', [1, 0], f.y ? 1 : 0) +
+         '<button class="vbtn" data-roll="center"' + (f.chosen ? '' : ' disabled') + '>' + (f.chosen ? Number(f.center).toFixed(dec) : '-') + '</button>' + esc(S('STR_SENTENCE_PLUSMINUS')) +
+         '<button class="vbtn" data-roll="margin"' + (f.chosen ? '' : ' disabled') + '>' + (f.chosen ? Number(f.margin).toFixed(dec) : '-') + '</button>' + (f.chosen ? esc(unit) : '') + '</div>';
+    if (!f.ai) {
+      var devs = rlChanDevices(d, f.chan);
+      h += '<div class="field"><label>' + esc(S('STR_LABEL_BASED_ON')) + '</label>' + sel('rSrc', 'STR_OPT_BASEDON_LIST', [0, 1], f.src);
+      if (f.src === 0 && f.chan === 1) h += sel('rGc', 'STR_OPT_GROUP_CHOICE_TEMP_LIST', [0, 1, 2], f.gc);
+      if (f.src === 1) {
+        h += devs.length ? '<select id="rDev">' + devs.map(function (x) {
+          return '<option value="' + x.mac + '"' + (x.mac === f.dev ? ' selected' : '') + '>' + esc(L(x, 'name')) + '</option>';
+        }).join('') + '</select>' : '<span class="sub">' + esc(S('STR_MSG_NO_SOURCE_DEVICE')) + '</span>';
+      }
+      h += sel('rStat', 'STR_OPT_SOURCE_STAT_LIST', [0, 1, 2], f.stat) + '</div>';
+      h += '<div class="field"><label>' + esc(S('STR_LABEL_TREND_ENABLE')) + '</label>' + toggleHtml('rTrend', f.trend) +
+           '<label style="text-align:right">' + esc(S('STR_LABEL_TREND_WINDOW')) + '</label>' +
+           sel('rTs', 'STR_OPT_TREND_SAMPLE_LIST', d.opt_ts, f.ts, f.trend ? '' : ' disabled') + '</div>';
+      h += '<div class="field"><label>' + esc(S('STR_LABEL_MIN_HOLD')) + '</label>' + sel('rHold', 'STR_OPT_MIN_HOLD_LIST', d.opt_hold, f.hold) + '</div>';
+    }
+    h += '</div>';
+    $('sheetBody').innerHTML = h;
+    bindRelay();
+    rlDirty();
+  }
+  /* 롤러 — 콘 open_value_roller_popup과 같은 나눔: 온도(소수 1자리) = [정수] . [0~9], CO2(10 단위) = [천][백][십] + "0".
+   * 범위는 콘과 같은 표(서버 spec: [최소, 최대, 단위, 소수 자리, 오차 최대]) — 오차는 0~오차 최대 */
+  var ROW = 44;
+  function rollCol(id, a, b, cur) {
+    var h = '<div class="rcol" id="' + id + '"><div class="sp"></div>';
+    for (var i = a; i <= b; i++) h += '<div class="it" data-v="' + i + '">' + i + '</div>';
+    return { html: h + '<div class="sp"></div></div>', a: a, cur: Math.min(b, Math.max(a, cur)) };
+  }
+  function colValue(id, a) { var c = $(id); return a + Math.round(c.scrollTop / ROW); }
+  function markCol(id) {
+    var c = $(id), k = Math.round(c.scrollTop / ROW);
+    [].forEach.call(c.querySelectorAll('.it'), function (e, i) { e.classList.toggle('on', i === k); });
+  }
+  function openRoller(key, onOk) {
+    var sp = rlSpec(), f = rl.form, isMargin = key === 'margin';
+    var lo = isMargin ? 0 : sp[0], hi = isMargin ? sp[4] : sp[1], v = f[key];
+    var unit = S(f.chan === 3 ? 'STR_UNIT_CO2' : 'STR_UNIT_TEMP');
+    var cols = [], h = '';
+    if (sp[3] > 0) {
+      var whole = Math.floor(v + 1e-6), frac = Math.round((v - whole) * 10);
+      if (frac > 9) { frac = 0; whole += 1; }
+      var c1 = rollCol('rcI', Math.floor(lo), Math.floor(hi), whole), c2 = rollCol('rcF', 0, 9, frac);
+      cols = [['rcI', c1], ['rcF', c2]];
+      h = c1.html + '<span class="rfix">.</span>' + c2.html + '<span class="rfix">' + esc(unit) + '</span>';
+    } else {
+      var t = Math.max(0, Math.round(v)), maxTh = Math.round(hi / 1000);
+      var a1 = rollCol('rcT', 0, maxTh, Math.floor(t / 1000)), a2 = rollCol('rcH', 0, 9, Math.floor(t / 100) % 10),
+          a3 = rollCol('rcE', 0, 9, Math.floor(t / 10) % 10);
+      cols = [['rcT', a1], ['rcH', a2], ['rcE', a3]];
+      h = a1.html + a2.html + a3.html + '<span class="rfix">0 ' + esc(unit) + '</span>';
+    }
+    $('modalBox').innerHTML = '<div class="mtitle" style="background:var(--blue);color:#fff">' + esc(S('STR_TITLE_SETTING')) + '</div>' +
+      '<div class="roll"><div class="band"></div>' + h + '</div>' +
+      '<div class="sfoot"><button data-m="no">' + esc(S('STR_BTN_CANCEL')) + '</button><button class="primary" data-m="yes">' + esc(S('STR_BTN_CONFIRM')) + '</button></div>';
+    $('modal').classList.remove('hidden');
+    cols.forEach(function (c) {
+      var el = $(c[0]);
+      el.scrollTop = (c[1].cur - c[1].a) * ROW;
+      markCol(c[0]);
+      el.addEventListener('scroll', function () { markCol(c[0]); }, { passive: true });
+    });
+    $('modal').onclick = function (ev) {
+      var m = ev.target.closest('[data-m]');
+      if (!m) return;
+      if (m.getAttribute('data-m') === 'yes') {
+        var nv = sp[3] > 0 ? colValue('rcI', cols[0][1].a) + colValue('rcF', 0) / 10
+                           : colValue('rcT', 0) * 1000 + colValue('rcH', 0) * 100 + colValue('rcE', 0) * 10;
+        if (nv > hi || nv < lo) { nv = Math.min(hi, Math.max(lo, nv)); toast(S('STR_MSG_RELAY_VALUE_CLAMPED')); }
+        onOk(Number(nv.toFixed(sp[3])));
+      }
+      $('modal').classList.add('hidden');
+      $('modal').onclick = null;
+    };
+  }
+
+  /* 10-21 — 카메라 수동값 롤러(콘 cb_man_value_tap과 같음): 노출 = [천][백][십][일], 게인 = [1~63].[0~9][0~9], AWB = [0~3].[0~9][0~9].
+   * 확인하면 레지스터 값(노출 줄, 게인 ×16, AWB ×1024)을 범위로 잘라 onOk */
+  function openManRoller(i, raw, onOk) {
+    var cols, h;
+    if (i === 0) {
+      var x = Math.min(9999, raw);
+      cols = [['rmA', rollCol('rmA', 0, 9, Math.floor(x / 1000))], ['rmB', rollCol('rmB', 0, 9, Math.floor(x / 100) % 10)],
+              ['rmC', rollCol('rmC', 0, 9, Math.floor(x / 10) % 10)], ['rmD', rollCol('rmD', 0, 9, x % 10)]];
+      h = cols.map(function (c) { return c[1].html; }).join('');
+    } else {
+      var den = i === 1 ? 16 : 1024, x100 = Math.round(raw * 100 / den), lo = i === 1 ? 1 : 0, hi = i === 1 ? 63 : 3;
+      cols = [['rmA', rollCol('rmA', lo, hi, Math.floor(x100 / 100))], ['rmB', rollCol('rmB', 0, 9, Math.floor(x100 / 10) % 10)],
+              ['rmC', rollCol('rmC', 0, 9, x100 % 10)]];
+      h = cols[0][1].html + '<span class="rfix">.</span>' + cols[1][1].html + cols[2][1].html;
+    }
+    var title = ['STR_LABEL_MAN_EXPOSURE', 'STR_LABEL_MAN_GAIN', 'STR_LABEL_MAN_AWB_R', 'STR_LABEL_MAN_AWB_G', 'STR_LABEL_MAN_AWB_B'][i];
+    $('modalBox').innerHTML = '<div class="mtitle" style="background:var(--blue);color:#fff">' + esc(i >= 2 ? S('STR_LABEL_MAN_AWB') + ' ' + S(title) : S(title)) + '</div>' +
+      '<div class="roll"><div class="band"></div>' + h + '</div>' +
+      '<div class="sfoot"><button data-m="no">' + esc(S('STR_BTN_CANCEL')) + '</button><button class="primary" data-m="yes">' + esc(S('STR_BTN_CONFIRM')) + '</button></div>';
+    $('modal').classList.remove('hidden');
+    cols.forEach(function (c) {
+      var el = $(c[0]);
+      el.scrollTop = (c[1].cur - c[1].a) * ROW;
+      markCol(c[0]);
+      el.addEventListener('scroll', function () { markCol(c[0]); }, { passive: true });
+    });
+    $('modal').onclick = function (ev) {
+      var m = ev.target.closest('[data-m]');
+      if (!m) return;
+      if (m.getAttribute('data-m') === 'yes') {
+        var r;
+        if (i === 0) {
+          r = Math.max(1, colValue('rmA', 0) * 1000 + colValue('rmB', 0) * 100 + colValue('rmC', 0) * 10 + colValue('rmD', 0));
+        } else {
+          var den2 = i === 1 ? 16 : 1024, v100 = colValue('rmA', cols[0][1].a) * 100 + colValue('rmB', 0) * 10 + colValue('rmC', 0);
+          r = Math.round(v100 * den2 / 100);
+          r = Math.min(i === 1 ? 1023 : 4095, Math.max(i === 1 ? 16 : 1, r));
+        }
+        onOk(r);
+      }
+      $('modal').classList.add('hidden');
+      $('modal').onclick = null;
+    };
+  }
+
+  /* 10-09(할 일 AG) — 시간 롤러: 길이 = [시][분][초], 시각 = [시]:[분](콘 cb_rt_tap과 같음) */
+  function openTimeRoller(key) {
+    var t = rl.form.t, clock = (key === 'ds' || key === 'ns');
+    var v = clock ? t[key] * 60 : t[key];
+    var u = S('STR_DUR_UNITS').split('\n');
+    var c1 = rollCol('rtH', 0, 23, Math.floor(v / 3600)), c2 = rollCol('rtM', 0, 59, Math.floor(v / 60) % 60), c3 = rollCol('rtS', 0, 59, v % 60);
+    var cols = clock ? [['rtH', c1], ['rtM', c2]] : [['rtH', c1], ['rtM', c2], ['rtS', c3]];
+    var h = clock ? c1.html + '<span class="rfix">:</span>' + c2.html
+                  : c1.html + '<span class="rfix">' + esc(u[0]) + '</span>' + c2.html + '<span class="rfix">' + esc(u[1]) + '</span>' + c3.html + '<span class="rfix">' + esc(u[2]) + '</span>';
+    $('modalBox').innerHTML = '<div class="mtitle" style="background:var(--blue);color:#fff">' + esc(S('STR_TITLE_SETTING')) + '</div>' +
+      '<div class="roll"><div class="band"></div>' + h + '</div>' +
+      '<div class="sfoot"><button data-m="no">' + esc(S('STR_BTN_CANCEL')) + '</button><button class="primary" data-m="yes">' + esc(S('STR_BTN_CONFIRM')) + '</button></div>';
+    $('modal').classList.remove('hidden');
+    cols.forEach(function (c) {
+      var el = $(c[0]);
+      el.scrollTop = (c[1].cur - c[1].a) * ROW;
+      markCol(c[0]);
+      el.addEventListener('scroll', function () { markCol(c[0]); }, { passive: true });
+    });
+    $('modal').onclick = function (ev) {
+      var m = ev.target.closest('[data-m]');
+      if (!m) return;
+      if (m.getAttribute('data-m') === 'yes') {
+        var hh = colValue('rtH', 0), mm = colValue('rtM', 0);
+        t[key] = clock ? hh * 60 + mm : hh * 3600 + mm * 60 + colValue('rtS', 0);
+        renderRelay();
+      }
+      $('modal').classList.add('hidden');
+      $('modal').onclick = null;
+    };
+  }
+
+  function rlDirty() {
+    var b = $('rApply'), f = rl.form;
+    if (b) b.disabled = (rlForm() === rlSnap) || (rlMode(f) >= 2 && !f.chosen);   /* 11-12(2-2) — 채널을 고르기 전엔 적용 안 됨 */
+  }
+  function bindRelay() {
+    var f = rl.form, d = rl.data;
+    function on(id, ev, fn) { var el = $(id); if (el) el.addEventListener(ev, fn); }
+    on('rAlias', 'input', function () { $('rAliasApply').disabled = (this.value === rl.alias); });
+    on('rFs', 'change', function () {
+      var v = +this.value;
+      post('api/relay/failsafe?idx=' + d.idx + '&min=' + v, '').then(function () { d.fs = v; toast(S('STR_BTN_APPLY') + ' \u2713'); })
+        .catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+    });
+    on('rUnpair', 'click', function () {   /* 11-18 — 자리는 숨고 설정은 남음 */
+      var r = last && last.relays && last.relays.filter(function (x) { return x.idx === d.idx; })[0];
+      if (!r || !r.mac || !confirm(relayName(r) + ' (' + r.mac.slice(6) + ')' + String.fromCharCode(10) + S('STR_MSG_UNPAIR_CONFIRM'))) return;
+      post('api/device/unpair?mac=' + r.mac).then(closeSheet).catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+    });
+    on('rAliasApply', 'click', function () {
+      var v = $('rAlias').value;
+      post('api/relay/alias?idx=' + d.idx, v).then(function () { rl.alias = v; $('rAliasApply').disabled = true; toast(S('STR_BTN_APPLY') + ' \u2713'); })
+        .catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+    });
+    on('rMode', 'change', function () {   /* 11-12 — 0 미설정 / 1 타이머 / 2 센서 AI / 3 센서 수동 */
+      var v = +this.value;
+      f.act = (v !== 0);
+      if (v === 0) { f.tm = rl.base.tm; f.ai = rl.base.ai; }   /* 미설정이면 마지막 방식은 적용된 그대로 */
+      else { f.tm = (v === 1); if (v !== 1) f.ai = (v === 2); }
+      renderRelay();
+    });
+    on('rOvr', 'change', function () {   /* 11-12 — 강제: 0 해제 / 1 켬 / 2 끔 */
+      var v = +this.value;
+      f.manual = (v !== 0);
+      f.mon = f.manual ? (v === 1) : rl.base.mon;
+      if (f.manual && !rl.form.relSet) f.rel = rl.base.rel;
+      renderRelay();
+    });
+    on('rRel', 'change', function () { f.rel = +this.value; f.relSet = true; rlDirty(); });
+    on('rZ', 'change', function () { f.z = this.value === '1'; rlDirty(); });
+    on('rDn', 'change', function () { f.t.dn = this.checked; renderRelay(); });
+    [].forEach.call(document.querySelectorAll('[data-troll]'), function (btn) {
+      btn.addEventListener('click', function () { openTimeRoller(btn.getAttribute('data-troll')); });
+    });
+    on('rY', 'change', function () { f.y = this.value === '1'; rlDirty(); });
+    on('rChan', 'change', function () {
+      f.chan = +this.value;
+      f.chosen = true;   /* 11-12(2-2) */
+      var def = rlChan(f.chan).def; f.center = def[0]; f.margin = def[1];   /* 채널을 바꾸면 그 채널 기본값(콘과 같음) */
+      var devs = rlChanDevices(d, f.chan); f.dev = devs[0] ? devs[0].mac : '';
+      renderRelay();
+    });
+    /* 값 버튼 → 롤러(확인하면 값 반영, 적용 버튼으로 저장) */
+    [].forEach.call(document.querySelectorAll('[data-roll]'), function (btn) {
+      btn.addEventListener('click', function () {
+        var key = btn.getAttribute('data-roll');
+        openRoller(key, function (nv) { f[key] = nv; renderRelay(); });
+      });
+    });
+    on('rSrc', 'change', function () { f.src = +this.value; renderRelay(); });
+    on('rGc', 'change', function () { f.gc = +this.value; renderRelay(); });
+    on('rDev', 'change', function () { f.dev = this.value; rlDirty(); });
+    on('rStat', 'change', function () { f.stat = +this.value; rlDirty(); });
+    on('rTrend', 'change', function () { f.trend = this.checked; renderRelay(); });
+    on('rTs', 'change', function () { f.ts = +this.value; rlDirty(); });
+    on('rHold', 'change', function () { f.hold = +this.value; rlDirty(); });
+    on('rApply', 'click', function () {
+      post('api/relay/apply?idx=' + d.idx, rlForm()).then(function () {
+        /* 11-12 \u2014 \uac15\uc81c\uc640 \ubc29\uc2dd\uc744 \ub530\ub85c \uae30\uc5b5(\uac15\uc81c \uce78\u00b7\ubc29\uc2dd \uce78\uc774 \ub530\ub85c \uc788\uc73c\ubbc0\ub85c) */
+        if (f.manual) { rl.base.mon = f.mon; rl.base.rel = f.rel; }
+        if (f.act) { rl.base.tm = f.tm; rl.base.ai = f.ai; }
+        if (rlMode(f) >= 2) f.chosen = true;
+        rlKeepBase();
+        rlSnap = rlForm(); rlDirty(); toast(S('STR_BTN_APPLY') + ' \u2713'); poll();
+      })
+        .catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+    });
+  }
+
+  /* ── 오래 걸리는 작업 오버레이: busyStart(라벨) → busySet(0~1 또는 null) → busyEnd(). 0.3초 안에 끝나면 안 보임 ── */
+  var busy = null;
+  function busyDraw() {
+    if (!busy) return;
+    var sec = Math.floor((Date.now() - busy.t0) / 1000);
+    $('busyTxt').textContent = Wt(busy.label) + (busy.pct !== null ? ' ' + Math.floor(busy.pct * 100) + '%' : '') + ' \u00b7 ' + sec + Wt('SEC');
+    $('busyBar').style.display = busy.pct !== null ? '' : 'none';
+    $('busyFill').style.width = busy.pct !== null ? (busy.pct * 100) + '%' : '0';
+  }
+  function busyStart(label) {
+    busyEnd();
+    busy = { label: label, pct: null, t0: Date.now() };
+    busy.show = setTimeout(function () { $('busy').classList.remove('hidden'); busyDraw(); }, 300);
+    busy.tick = setInterval(busyDraw, 500);
+  }
+  function busySet(pct) { if (busy) { busy.pct = pct; busyDraw(); } }
+  function busyEnd() {
+    if (!busy) return;
+    clearTimeout(busy.show); clearInterval(busy.tick);
+    busy = null;
+    $('busy').classList.add('hidden');
+  }
+
+  /* 사진 받기(진행률) — 콘이 Content-Length를 주므로 받은 양으로 %. 받은 사진은 blob URL로 기억(다시 보면 바로) */
+  var photoBlobs = {};
+  function loadPhoto(url) {
+    if (photoBlobs[url]) return Promise.resolve(photoBlobs[url]);
+    busyStart('LOADING');
+    return xfetch(url, { credentials: 'same-origin' }).then(function (r) {
+      if (r.status === 401) { show('login'); throw { handled: true }; }
+      if (r.status === 409) { show('local'); throw { handled: true }; }
+      if (r.status === 503 && r.headers.get('X-Cntl-Restoring')) { show('restore'); throw { handled: true }; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      var total = +r.headers.get('Content-Length') || 0;
+      if (!r.body || !r.body.getReader) return r.blob();
+      var reader = r.body.getReader(), chunks = [], got = 0;
+      function pump() {
+        return reader.read().then(function (x) {
+          if (x.done) return new Blob(chunks, { type: 'image/jpeg' });
+          chunks.push(x.value); got += x.value.length;
+          if (total) busySet(Math.min(1, got / total));
+          return pump();
+        });
+      }
+      return pump();
+    }).then(function (b) {
+      busyEnd();
+      return (photoBlobs[url] = URL.createObjectURL(b));
+    }, function (e) { busyEnd(); throw e; });
+  }
+
+  /* ── 카메라 팝업(콘 build_camera_tab과 같은 기능): 카메라 선택, 지금촬영·목록갱신·모두 지우기, 사진 목록(20장씩), 미리보기,
+   *    웹 전용 전체 화면 보기. 미리보기는 원본 JPEG을 브라우저가 줄여서 보여 줌(썸네일 파일 없음 — 사용자 결정) ── */
+  var cam = null, camTimer = null;
+  function fmtTime(t) { var d = new Date(t * 1000).toISOString(); return d.substr(5, 5) + ' ' + d.substr(11, 8); }   /* 콘 시각은 현지값을 그대로 초로 셈 */
+  function photoName(it) { return it.kind + ('00000000' + it.seq).slice(-8); }
+  function photoUrl(it) { return 'api/cam/photo?mac=' + cam.mac + '&kind=' + it.kind.charCodeAt(0) + '&seq=' + it.seq; }
+  function openCamera() {
+    api('api/cam/list').then(function (d) {
+      var prev = cam && cam.mac;
+      var list = d.cams || [];
+      cam = { list: list, mac: (list.some(function (c) { return c.mac === prev; }) ? prev : (list[0] ? list[0].mac : '')),
+              page: 0, data: null, sel: null, wake: d.wake_s || 0 };
+      openSheet(renderCamera);
+      loadPhotos();
+    }).catch(function () {});
+  }
+  function loadPhotos() {
+    if (!cam || !cam.mac) { renderCamera(); return; }
+    api('api/cam/photos?mac=' + cam.mac + '&page=' + cam.page).then(function (d) {
+      cam.data = d;
+      if (cam.sel && !d.items.some(function (it) { return it.kind === cam.sel.kind && it.seq === cam.sel.seq; }) && cam.page === 0) cam.sel = null;
+      if (!cam.sel && d.items.length && cam.page === 0) cam.sel = d.items[0];   /* 처음엔 최신 사진 */
+      if (sheetRender === renderCamera) renderCamera();
+    }).catch(function () {});
+  }
+  function renderCamera() {
+    /* 10-05 — 다시 그릴 때 새 사진을 받는 동안은 이전 사진을 그대로(비워 두면 세로에서 미리보기 높이가 0이 되어 목록이 화면을 채움) */
+    var oldImg = $('camPrev'), oldSrc = oldImg ? oldImg.getAttribute('src') : null;
+    /* 같은 쪽을 다시 그릴 때(사진 선택 등)는 목록 스크롤 위치를 유지 */
+    var oldList = document.querySelector('#sheetBody .plist');
+    var keepTop = (oldList && cam.shownPage === cam.page) ? oldList.scrollTop : 0;
+    cam.shownPage = cam.page;
+    $('sheetBody').className = 'sbody cam';
+    var h = sheetHead('STR_GROUP_CAMERA');
+    if (!cam.list.length) {
+      $('sheetBody').innerHTML = h + '<div class="field"><span class="sub">' + esc(S('STR_PANEL_NO_CAMERA')) + '</span></div>';
+      return;
+    }
+    var cur = cam.list.filter(function (c) { return c.mac === cam.mac; })[0];
+    /* 10-05 — 카메라 선택과 버튼을 한 줄에(가로 화면에서 목록 높이 확보). 폭이 모자라면 줄바꿈 */
+    h += '<div class="btnrow camtop"><select id="camSel">' + cam.list.map(function (c) {
+      return '<option value="' + c.mac + '"' + (c.mac === cam.mac ? ' selected' : '') + '>' + esc(L(c, 'name')) + '</option>';
+    }).join('') + '</select>';
+    h += '<button id="camShot"></button><button id="camRenew">' + esc(S('STR_BTN_RENEW_LIST')) + '</button><button id="camDelAll" class="danger">' + esc(S('STR_BTN_DELETE_ALL')) + '</button></div>';
+    h += '<div class="camsplit"><div class="prev">' + (cam.sel ? '<img id="camPrev" alt=""><div class="sub">' + esc(photoName(cam.sel) + '  ' + fmtTime(cam.sel.t)) + '</div>'
+                                          : '<span class="sub">' + esc(S('STR_PANEL_NO_PHOTO_YET')) + '</span>') + '</div>';
+    var d = cam.data;
+    h += '<div class="camlist"><div class="field"><strong>' + esc(S('STR_PANEL_LIST')) + '</strong><span class="sub">' + (d ? d.count : '') + '</span></div>';
+    if (d && d.items.length) {
+      h += '<div class="plist">' + d.items.map(function (it) {
+        var on = cam.sel && cam.sel.kind === it.kind && cam.sel.seq === it.seq;
+        return '<div class="prow tap' + (on ? ' sel' : '') + '" data-ph="' + it.kind + it.seq + '"><span class="grow">' + esc(photoName(it) + '  ' + fmtTime(it.t) +
+               ' (' + Math.round(it.size / 1024) + 'KB)') + '</span><button class="small danger" data-del="' + it.kind + it.seq + '">&#x1F5D1;</button></div>';
+      }).join('') + '</div>';
+      var pages = Math.max(1, Math.ceil(d.count / d.page_size));
+      h += '<div class="pager"><button class="small" data-pg="-10">' + esc(S('STR_BTN_JUMP_PREV10')) + '</button><button class="small" data-pg="-1">&lt;</button>' +
+           '<span class="sub">' + (cam.page + 1) + ' / ' + pages + '</span><button class="small" data-pg="1">&gt;</button><button class="small" data-pg="10">' +
+           esc(S('STR_BTN_JUMP_NEXT10')) + '</button></div>';
+    } else if (d) {
+      h += '<div class="field"><span class="sub">' + esc(S('STR_LIST_EMPTY')) + '</span></div>';
+    }
+    h += '</div></div>';   /* .camlist, .camsplit */
+    $('sheetBody').innerHTML = h;
+    fitSelect($('camSel'));
+    updateCamShot();
+    var newList = document.querySelector('#sheetBody .plist');
+    if (newList) newList.scrollTop = keepTop;
+    bindCamera();
+    if (cam.sel) {
+      var want = photoUrl(cam.sel);
+      if ($('camPrev')) $('camPrev').src = photoBlobs[want] || oldSrc || '';
+      loadPhoto(want).then(function (src) {
+        var img = $('camPrev');
+        if (img && cam.sel && photoUrl(cam.sel) === want) img.src = src;
+      }).catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+    }
+  }
+  /* 10-05(사용자 설계) — 지금 촬영 버튼 = 고른 캠의 연결 상태(콘과 같음): 통신 중 파랑(바로 찍음), 연결됨·잠듦 초록(깨어나면 찍음),
+   * 그 밖엔 꺼짐 + "연결 안 됨". 상태는 열 때 받은 목록 + 주화면 내용(WebSocket)으로 계속 갱신 */
+  /* 10-05(사용자 지시) — 캠 선택 칸은 고정 폭. 이름이 4자를 넘으면 앞 4자 + "…"(칸 폭은 그 길이에 맞춤). 전체 이름은 title */
+  var SEL_KEEP = 4;
+  function fitSelect(sel) {
+    if (!sel) return;
+    [].forEach.call(sel.options, function (o) {
+      var full = o.getAttribute('data-full') || o.textContent;
+      o.setAttribute('data-full', full);
+      o.title = full;
+      var chars = Array.from(full);
+      o.textContent = chars.length > SEL_KEEP ? chars.slice(0, SEL_KEEP).join('') + '…' : full;
+    });
+  }
+  function camCur() { return cam ? cam.list.filter(function (c) { return c.mac === cam.mac; })[0] : null; }
+  function updateCamShot() {
+    var b = $('camShot'), cur = camCur();
+    if (!b) return;
+    var st = cur ? cur.status : '';
+    var ok = st === 'active' || st === 'paired';
+    b.disabled = !ok;
+    b.className = st === 'active' ? 'primary' : st === 'paired' ? 'green' : '';
+    b.textContent = S(ok ? 'STR_BTN_CAPTURE_NOW' : 'STR_BTN_NOT_CONNECTED');
+  }
+  function syncCamStatus(nodes) {
+    if (!cam || sheetRender !== renderCamera) return;
+    cam.list.forEach(function (c) {
+      var n = (nodes || []).filter(function (x) { return x.mac === c.mac && x.kind === 'cam'; })[0];
+      c.status = n ? n.status : 'offline';
+    });
+    updateCamShot();
+  }
+  function findItem(code) { return (cam.data ? cam.data.items : []).filter(function (it) { return it.kind + it.seq === code; })[0]; }
+  function bindCamera() {
+    function on(id, fn) { var el = $(id); if (el) el.addEventListener(id === 'camSel' ? 'change' : 'click', fn); }
+    on('camSel', function () { cam.mac = this.value; cam.page = 0; cam.sel = null; cam.data = null; renderCamera(); loadPhotos(); });
+    on('camRenew', function () { loadPhotos(); });
+    on('camShot', function () {
+      var before = cam.data ? cam.data.count : 0, cur = camCur(), awake = cur && cur.status === 'active', mac = cam.mac;
+      post('api/cam/capture?mac=' + mac).then(function () {
+        /* 사진은 캠이 콘으로 바로 보냄 — 목록 수가 늘면 새 사진을 보여 줌.
+         * 통신 중: 진행 표시를 띄우고 30초까지. 잠듦(10-05): "깨어나면 촬영(최대 약 N초)"만 알리고 진행 표시 없이 N + 60초까지 */
+        var limit = awake ? 30000 : (cam.wake + 60) * 1000;
+        if (awake) busyStart('CAPTURING');
+        else toast(cam.wake ? fmt(S('STR_FMT_CAPTURE_ON_WAKE'), cam.wake) : S('STR_CAPTURE_QUEUED_TOAST'));   /* 응답성 "즉시"면 주기 없음 */
+        var t0 = Date.now(); clearInterval(camTimer);
+        camTimer = setInterval(function () {
+          if (sheetRender !== renderCamera || cam.mac !== mac) { clearInterval(camTimer); busyEnd(); return; }
+          api('api/cam/photos?mac=' + mac + '&page=0').then(function (d) {
+            if (d.count > before) {
+              clearInterval(camTimer); busyEnd();
+              if (!awake) toast(Wt('PHOTO_ARRIVED'));
+              cam.page = 0; cam.sel = null; cam.data = d; loadPhotos();
+            } else if (Date.now() - t0 > limit) { clearInterval(camTimer); busyEnd(); toast(Wt('NO_PHOTO')); }
+          }).catch(function () {});
+        }, awake ? 3000 : 5000);
+      }).catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+    });
+    on('camDelAll', function () {
+      if (!confirm(S('STR_MSG_DELETE_ALL_CONFIRM'))) return;
+      post('api/cam/delete_all?mac=' + cam.mac).then(function () { cam.page = 0; cam.sel = null; loadPhotos(); })
+        .catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+    });
+    on('camPrev', function () { var u = photoUrl(cam.sel); loadPhoto(u).then(openViewer).catch(function () {}); });
+    $('sheetBody').querySelectorAll('[data-ph]').forEach(function (row) {
+      row.addEventListener('click', function (ev) {
+        var del = ev.target.closest('[data-del]');
+        var it = findItem((del || row).getAttribute(del ? 'data-del' : 'data-ph'));
+        if (!it) return;
+        if (del) {
+          if (!confirm(S('STR_MSG_DELETE_PHOTO_CONFIRM'))) return;
+          post('api/cam/delete?mac=' + cam.mac + '&kind=' + it.kind.charCodeAt(0) + '&seq=' + it.seq).then(function () {
+            if (cam.sel && cam.sel.seq === it.seq && cam.sel.kind === it.kind) cam.sel = null;
+            loadPhotos();
+          }).catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+          return;
+        }
+        cam.sel = it;
+        renderCamera();
+      });
+    });
+    $('sheetBody').querySelectorAll('[data-pg]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var pages = Math.max(1, Math.ceil(cam.data.count / cam.data.page_size));
+        cam.page = Math.min(pages - 1, Math.max(0, cam.page + (+b.getAttribute('data-pg'))));
+        loadPhotos();
+      });
+    });
+  }
+
+  /* ── 에러·경고 목록(콘 cb_logo_warning_tap): 에러 Exxxx(빨강), 경고 Wxxxx(짙은 노랑), 행마다 지우기. SD 5008/5009는 지우기 대신
+   *    해결 → 재마운트/포맷(콘처럼 검증을 통과해야 지워짐). X로만 닫힘 ── */
+  var errs = null;
+  function openErrors() {
+    api('api/errors').then(function (d) { errs = d; openSheet(renderErrors); }).catch(function () {});
+  }
+  function reloadErrors() {
+    api('api/errors').then(function (d) { errs = d; if (sheetRender === renderErrors) renderErrors(); poll(); }).catch(function () {});
+  }
+  function errDesc(kind, code) { var k = ERRDESC[kind][code] || ERRDESC[kind + '_UNKNOWN']; return k ? S(k) : ''; }
+  function renderErrors() {
+    var h = sheetHead('STR_TITLE_ERROR_LIST');
+    if (!errs.errors.length && !errs.warns.length) h += '<div class="field"><span class="sub">' + esc(S('STR_ERROR_LIST_EMPTY')) + '</span></div>';
+    errs.errors.forEach(function (c) {
+      var sd = c === 5008 || c === 5009;
+      h += '<div class="field"><label style="color:var(--red)">' + esc('E' + ('000' + c).slice(-4) + ' ' + errDesc('E', c)) + '</label>' +
+           (sd ? '<button class="small" data-sdres="1">' + esc(S('STR_BTN_SD_RESOLVE')) + '</button>'
+               : '<button class="small" data-eclr="e' + c + '">' + esc(S('STR_BTN_DISMISS')) + '</button>') + '</div>';
+    });
+    errs.warns.forEach(function (c) {
+      h += '<div class="field"><label style="color:#b8860b">' + esc('W' + ('000' + c).slice(-4) + ' ' + errDesc('W', c)) + '</label>' +
+           '<button class="small" data-eclr="w' + c + '">' + esc(S('STR_BTN_DISMISS')) + '</button></div>';
+    });
+    $('sheetBody').innerHTML = h;
+    $('sheetBody').querySelectorAll('[data-eclr]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var v = b.getAttribute('data-eclr');
+        post('api/errors/clear?kind=' + v.charAt(0) + '&code=' + v.slice(1)).then(reloadErrors).catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+      });
+    });
+    $('sheetBody').querySelectorAll('[data-sdres]').forEach(function (b) { b.addEventListener('click', openSdResolve); });
+  }
+  /* SD 해결 — 재마운트 / 포맷(확인). 결과는 콘과 같은 문구. 실패하면 이 선택창을 다시 띄움(콘: 해결 팝업이 남아 다른 조치를 고름) */
+  function openSdResolve() {
+    $('modalBox').innerHTML = '<div class="mtitle">' + esc(S('STR_TITLE_SD_RESOLVE')) + '</div>' +
+      '<div style="white-space:pre-line;margin:8px 0">' + esc(S('STR_MSG_SD_RESOLVE_GUIDE').replace('%u', String(lastHeld))) + '</div>' +
+      '<div class="sfoot"><button data-m="no">' + esc(S('STR_BTN_CANCEL')) + '</button><button data-m="rec">' + esc(S('STR_BTN_SD_RECONNECT')) +
+      '</button><button class="danger" data-m="fmt">' + esc(S('STR_BTN_SD_FORMAT')) + '</button></div>';
+    $('modal').classList.remove('hidden');
+    $('modal').onclick = function (ev) {
+      var m = ev.target.closest('[data-m]');
+      if (!m) return;
+      var a = m.getAttribute('data-m');
+      $('modal').classList.add('hidden');
+      $('modal').onclick = null;
+      if (a === 'no') return;
+      if (a === 'fmt' && !confirm(S('STR_MSG_SD_FORMAT_CONFIRM'))) { openSdResolve(); return; }
+      busyStart('LOADING');
+      post(a === 'rec' ? 'api/sd/reconnect' : 'api/sd/format').then(function () {
+        busyEnd();
+        alert(S(a === 'rec' ? 'STR_MSG_SD_RECONNECT_OK' : 'STR_MSG_SD_FORMAT_OK'));
+        reloadErrors();
+      }).catch(function (e) {
+        busyEnd();
+        if (e && e.handled) return;
+        alert(S(a === 'rec' ? 'STR_MSG_SD_RECONNECT_FAIL' : 'STR_MSG_SD_FORMAT_FAIL'));
+        openSdResolve();
+      });
+    };
+  }
+
+  /* ── 알림(할 일 AD 5단계): 콘 알림 기록이 기준. 안 본 개수 = 콘 마지막 번호 - 이 브라우저가 본 번호(브라우저마다 따로).
+   *    웹앱이 열려 있는 동안 생긴 보낼 대상은 콘이 주화면 내용(alarm.new)에 실어 줌 → 토스트 ── */
+  var ALARM_MAX = 500, alarmSeen = null, alarmLast = 0, shownMax = 0;
+  try { var sv = localStorage.getItem('alarmSeen'); if (sv !== null && sv !== '') alarmSeen = +sv; } catch (e) {}
+  function setAlarmSeen(v) { alarmSeen = v; try { localStorage.setItem('alarmSeen', String(v)); } catch (e) {} }
+  function typeLabel(t) { var x = W.N_TYPES[t]; return x ? x[li()] : ''; }
+  function renderAlarmBadge() {
+    var n = Math.max(0, Math.min(ALARM_MAX, alarmLast - (alarmSeen || 0))), el = $('alarmCnt');
+    el.textContent = n > 99 ? '99+' : String(n);
+    el.classList.toggle('hidden', n === 0);
+  }
+  function checkAlarms(a) {
+    if (!a) return;
+    /* 처음 쓰는 브라우저는 지난 알림을 안 본 것으로 치지 않음. 콘 기록이 비워졌으면(번호가 줄면) 다시 맞춤 */
+    if (alarmSeen === null || a.last < alarmSeen) setAlarmSeen(a.last);
+    alarmLast = a.last;
+    renderAlarmBadge();
+    var fresh = (a.new || []).filter(function (it) { return it.id > shownMax; });
+    if (fresh.length) {
+      var it = fresh[fresh.length - 1];
+      toast(typeLabel(it.type) + ' \u00b7 ' + it.msg + (fresh.length > 1 ? ' (+' + (fresh.length - 1) + ')' : ''), true);   /* 10-05 — 배너 대신 토스트(사용자 지시), 기록은 종 버튼 */
+      shownMax = it.id;
+      post('api/alarms/ack?id=' + shownMax).catch(function () {});
+    }
+  }
+
+  var al = { page: 0, data: null, seenAtOpen: 0 };
+  function openAlarms() {
+    al.page = 0;
+    al.data = null;
+    al.seenAtOpen = alarmSeen || 0;   /* 이 팝업 안에서는 열기 전 기준으로 안 본 것을 굵게 */
+    openSheet(renderAlarms);
+    loadAlarms();
+  }
+  function loadAlarms() {
+    api('api/alarms?page=' + al.page).then(function (d) {
+      al.data = d;
+      if (al.page === 0) { setAlarmSeen(d.last); alarmLast = d.last; renderAlarmBadge(); }   /* 열어 본 것 = 모두 본 것 */
+      if (sheetRender === renderAlarms) renderAlarms();
+    }).catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+  }
+  function renderAlarms() {
+    var h = sheetHead('STR_TAB_OPTION').replace(esc(S('STR_TAB_OPTION')), esc(Wt('NOTIFY')));
+    var d = al.data;
+    if (d) {
+      if (!d.items.length) h += '<div class="field"><span class="sub">' + esc(Wt('NO_ALARMS')) + '</span></div>';
+      h += d.items.map(function (it) {
+        return '<div class="arow' + (it.id > al.seenAtOpen ? ' unread' : '') + '"><div class="sub">' + esc(fmtTime(it.t) + '  ' + typeLabel(it.type) +
+               (it.push ? '' : '  · ' + Wt('NOT_PUSHED'))) + '</div><div>' + esc(it.msg) + '</div></div>';
+      }).join('');
+      var pages = Math.max(1, Math.ceil(d.count / d.page_size));
+      if (pages > 1) {
+        h += '<div class="pager"><button class="small" data-apg="-1"' + (al.page > 0 ? '' : ' disabled') + '>&lt;</button><span class="sub">' + (al.page + 1) + ' / ' + pages +
+             '</span><button class="small" data-apg="1"' + (al.page + 1 < pages ? '' : ' disabled') + '>&gt;</button></div>';
+      }
+    }
+    $('sheetBody').innerHTML = h;
+    $('sheetBody').querySelectorAll('[data-apg]').forEach(function (b) {
+      b.addEventListener('click', function () { al.page = Math.max(0, al.page + (+b.getAttribute('data-apg'))); loadAlarms(); });
+    });
+  }
+
+  /* ── 설정 팝업(콘 build_option_tab과 같은 항목 — 언어·네트워크·화면 끄기는 뺌(사용자 결정)) + 웹 전용 알림·보안.
+   *    선택지는 고르는 즉시 저장(콘과 같음), 글자 입력(토픽·주소·비밀번호)만 버튼으로 ── */
+  var cfg = null, setTimer = null, logTimer = null, clockOff = 0;
+  function fmtFull(t) { var d = new Date(t * 1000).toISOString(); return d.substr(0, 10) + ' ' + d.substr(11, 8); }   /* 콘 시각 = 현지값을 초로 */
+  function gtitle(t) { return '<div class="gtitle">' + esc(t) + '</div>'; }
+  function gsub(t) { return '<div class="gsub">' + esc(t) + '</div>'; }
+  function field(label, ctl, nb) { return '<div class="field' + (nb ? ' nb' : '') + '"><label>' + esc(label) + '</label><span class="ctl">' + ctl + '</span></div>'; }
+  function tgl(id, on, dis, attr) {
+    return '<label class="tg"><input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + (dis ? ' disabled' : '') + (attr || '') + '><span></span></label>';
+  }
+  function apiText(path) {
+    return xfetch(path, { cache: 'no-store', credentials: 'same-origin' }).then(function (r) {
+      if (r.status === 401) { show('login'); throw { handled: true }; }
+      if (r.status === 409) { show('local'); throw { handled: true }; }
+      if (r.status === 503 && r.headers.get('X-Cntl-Restoring')) { show('restore'); throw { handled: true }; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    });
+  }
+  function openSettings() {
+    api('api/settings').then(function (d) {
+      cfg = d;
+      clockOff = d.time - Date.now() / 1000;
+      openSheet(renderSettings);
+      clearInterval(setTimer);
+      setTimer = setInterval(function () { var c = $('stClock'); if (c) c.textContent = fmtFull(Math.floor(Date.now() / 1000 + clockOff)); }, 1000);
+    }).catch(function () {});
+  }
+  function renderSettings() {
+    var d = cfg, n = d.notify;
+    var h = sheetHead('STR_TAB_OPTION');
+    h += gtitle(S('STR_GROUP_CNTL'));
+    /* 콘: 신규 자동연결을 켜면 이전 연결 자동연결은 켜진 채 잠김 */
+    h += field(S('STR_LABEL_AUTO_CONNECT_NEW'), tgl('stAutoNew', d.auto_new));
+    h += field(S('STR_LABEL_AUTO_CONNECT_KNOWN'), tgl('stAutoKnown', d.auto_new || d.auto_known, d.auto_new));
+    h += field(S('STR_LABEL_RESTART_DEVICE'), '<button id="stRestart" class="danger">' + esc(S('STR_BTN_RESTART')) + '</button>');
+    h += gtitle(S('STR_GROUP_SYSTEM'));
+    var ri = d.resp_opts.indexOf(d.resp);
+    h += field(S('STR_LABEL_RESPONSE_INTERVAL'), '<select id="stResp">' + optionsHtml('STR_OPT_RESPONSE_INTERVAL_LIST', d.resp_opts, d.resp) + '</select>', true);
+    var RESP_HELP = ['STR_RESPONSE_HELP_0', 'STR_RESPONSE_HELP_1', 'STR_RESPONSE_HELP_2', 'STR_RESPONSE_HELP_3', 'STR_RESPONSE_HELP_4'];   /* 콘 update_response_help_text */
+    h += '<div class="help">' + esc(S(RESP_HELP[Math.max(0, ri)])) + '</div>';
+    h += field(S('STR_LABEL_ADAPTIVE_RESPONSE'), '<select id="stAdapt">' + optionsHtml('STR_OPT_ADAPTIVE_RESPONSE_LIST', d.adapt_opts, d.adapt) + '</select>', true);
+    h += '<div class="help">' + esc(S('STR_HELP_ADAPTIVE_RESPONSE')) + '</div>';
+    h += field(S('STR_LABEL_TIME'), '<span id="stClock" class="val">' + fmtFull(Math.floor(Date.now() / 1000 + clockOff)) + '</span><button id="stTime" class="small">' +
+               esc(S('STR_BTN_SET_TIME')) + '</button><button id="stTimePhone" class="small">' + esc(Wt('TIME_PHONE')) + '</button>');
+    h += field(S('STR_TAB_LOG'), '<button id="stLog" class="small">' + esc(S('STR_BTN_VIEW')) + '</button>');
+    /* 웹 묶음 — 콘 화면에 없는 웹 전용(언어는 이 브라우저에만 저장) */
+    h += gtitle(Wt('WEB'));
+    h += field(S('STR_LABEL_LANGUAGE'), '<span class="seg"><button class="small' + (lang === 'ko' ? ' on' : '') + '" data-lang="ko">한국어</button> ' +
+               '<button class="small' + (lang === 'en' ? ' on' : '') + '" data-lang="en">English</button></span>');
+    h += gsub(Wt('NOTIFY'));
+    W.N_TYPES.forEach(function (t, i) { h += field(t[li()], tgl('stNt' + i, (n.types >> i) & 1, false, ' data-nt="' + i + '"')); });
+    h += '<div class="field"><label>' + esc(Wt('TOPIC')) + '</label><input type="text" id="stTopic" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="63" value="' + esc(n.topic) + '"></div>';
+    h += '<div class="field"><label>' + esc(Wt('CLICK')) + '</label><input type="text" id="stClick" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="159" value="' + esc(n.click) + '"></div>';
+    h += '<div class="sfoot"><button id="stNtTest">' + esc(Wt('TEST_SEND')) + '</button><button id="stNtApply" class="primary">' + esc(S('STR_BTN_APPLY')) + '</button></div>';
+    h += gsub(Wt('SECURITY'));
+    h += '<div class="field"><label>' + esc(Wt('PW_OLD')) + '</label><input type="password" id="stPwOld" autocomplete="current-password"></div>';
+    h += '<div class="field"><label>' + esc(Wt('PW_NEW')) + '</label><input type="password" id="stPwNew" autocomplete="new-password"></div>';
+    h += '<div class="sfoot"><button id="stPwBtn" class="primary">' + esc(Wt('PW_CHANGE')) + '</button></div>';
+    h += '<div class="sfoot" style="border-top:1px solid var(--line)"><button id="stLogoutAll" class="danger">' + esc(Wt('LOGOUT_ALL')) + '</button></div>';
+    $('sheetBody').innerHTML = h;
+    bindSettings();
+  }
+  function setKeyVal(key, val) {
+    return post('api/settings/set?key=' + key + '&val=' + val).catch(function (e) { if (!(e && e.handled)) toast('Error'); throw e; });
+  }
+  function notifyTypes() {
+    var t = 0;
+    W.N_TYPES.forEach(function (x, i) { if ($('stNt' + i).checked) t |= 1 << i; });
+    return t;
+  }
+  function saveNotify(topic, click, types) {
+    return post('api/notify/set', topic + '\n' + click + '\n' + types).then(function () {
+      cfg.notify = { topic: topic, click: click, types: types };
+    });
+  }
+  function bindSettings() {
+    function on(id, ev, fn) { var el = $(id); if (el) el.addEventListener(ev, fn); }
+    on('stAutoNew', 'change', function () {
+      var v = this.checked;
+      setKeyVal('auto_new', v ? 1 : 0).then(function () { cfg.auto_new = v; renderSettings(); }).catch(function () { renderSettings(); });
+    });
+    on('stAutoKnown', 'change', function () {
+      var v = this.checked;
+      setKeyVal('auto_known', v ? 1 : 0).then(function () { cfg.auto_known = v; }).catch(function () { renderSettings(); });
+    });
+    on('stRestart', 'click', function () {
+      if (!confirm(S('STR_MSG_RESTART_CONFIRM'))) return;
+      post('api/restart').then(function () { closeSheet(); toast(Wt('RESTARTING')); }).catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+    });
+    on('stResp', 'change', function () {
+      var v = +this.value;
+      setKeyVal('resp', v).then(function () { cfg.resp = v; renderSettings(); }).catch(function () { renderSettings(); });
+    });
+    on('stAdapt', 'change', function () {
+      var v = +this.value;
+      setKeyVal('adapt', v).then(function () { cfg.adapt = v; }).catch(function () { renderSettings(); });
+    });
+    on('stTime', 'click', openTimeRoller);
+    on('stTimePhone', 'click', function () {
+      var t = new Date();   /* 휴대폰의 현지 시각을 그대로(콘은 현지 시각) */
+      sendTime(t.getFullYear(), t.getMonth() + 1, t.getDate(), t.getHours(), t.getMinutes(), t.getSeconds());
+    });
+    on('stLog', 'click', openLogs);
+    $('sheetBody').querySelectorAll('[data-lang]').forEach(function (b) {
+      b.addEventListener('click', function () { if (b.getAttribute('data-lang') !== lang) setLang(b.getAttribute('data-lang')); });
+    });
+    $('sheetBody').querySelectorAll('[data-nt]').forEach(function (el) {
+      el.addEventListener('change', function () {
+        saveNotify(cfg.notify.topic, cfg.notify.click, notifyTypes()).catch(function (e) { if (!(e && e.handled)) toast('Error'); renderSettings(); });
+      });
+    });
+    on('stNtApply', 'click', function () {
+      saveNotify($('stTopic').value.trim(), $('stClick').value.trim(), notifyTypes()).then(function () { toast(Wt('SAVED')); })
+        .catch(function (e) { if (!(e && e.handled)) toast(Wt('INVALID')); });
+    });
+    on('stNtTest', 'click', function () {
+      post('api/notify/test').then(function () { toast(Wt('SENT')); }).catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+    });
+    on('stPwBtn', 'click', function () {
+      var o = $('stPwOld').value, nw = $('stPwNew').value;
+      if (!o || !nw) return;
+      post('api/password', o + '\n' + nw).then(function () { $('stPwOld').value = ''; $('stPwNew').value = ''; toast(Wt('PW_CHANGED')); })
+        .catch(function (e) { if (!(e && e.handled)) toast(Wt('PW_FAIL')); });
+    });
+    on('stLogoutAll', 'click', function () {
+      if (!confirm(Wt('LOGOUT_ALL_CONFIRM'))) return;
+      post('api/logout_all').then(function () { realCloseSheet(); show('login'); }).catch(function () {});
+    });
+  }
+  function pad2(v) { return (v < 10 ? '0' : '') + v; }
+  function sendTime(y, mo, d, hh, mi, ss) {
+    var t = y + '-' + pad2(mo) + '-' + pad2(d) + '+' + pad2(hh) + ':' + pad2(mi) + ':' + pad2(ss);
+    post('api/time?t=' + t).then(function () {
+      clockOff = Date.UTC(y, mo - 1, d, hh, mi, ss) / 1000 - Date.now() / 1000;
+      var c = $('stClock'); if (c) c.textContent = fmtFull(Math.floor(Date.now() / 1000 + clockOff));
+      toast(Wt('SAVED'));
+    }).catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+  }
+  /* 시각 설정 — 콘 show_settime_popup과 같은 칸(년·월·일·시·분, 연도는 올해 -2 ~ +8), 고르는 건 롤러 */
+  function openTimeRoller() {
+    var now = new Date(Date.now() + clockOff * 1000), y = now.getUTCFullYear();
+    var cols = [['tY', rollCol('tY', y - 2, y + 8, y)], ['tMo', rollCol('tMo', 1, 12, now.getUTCMonth() + 1)], ['tD', rollCol('tD', 1, 31, now.getUTCDate())],
+                ['tH', rollCol('tH', 0, 23, now.getUTCHours())], ['tMi', rollCol('tMi', 0, 59, now.getUTCMinutes())]];
+    var sep = ['-', '-', '&nbsp;', ':', ''];
+    var h = cols.map(function (c, i) { return c[1].html + (sep[i] ? '<span class="rfix">' + sep[i] + '</span>' : ''); }).join('');
+    $('modalBox').innerHTML = '<div class="mtitle" style="background:var(--blue);color:#fff">' + esc(S('STR_LABEL_TIME')) + '</div>' +
+      '<div class="roll"><div class="band"></div>' + h + '</div>' +
+      '<div class="sfoot"><button data-m="no">' + esc(S('STR_BTN_CANCEL')) + '</button><button class="primary" data-m="yes">' + esc(S('STR_BTN_CONFIRM')) + '</button></div>';
+    $('modal').classList.remove('hidden');
+    cols.forEach(function (c) {
+      var el = $(c[0]);
+      el.style.width = c[0] === 'tY' ? '72px' : '48px';
+      el.scrollTop = (c[1].cur - c[1].a) * ROW;
+      markCol(c[0]);
+      el.addEventListener('scroll', function () { markCol(c[0]); }, { passive: true });
+    });
+    $('modal').onclick = function (ev) {
+      var m = ev.target.closest('[data-m]');
+      if (!m) return;
+      if (m.getAttribute('data-m') === 'yes') {
+        var v = cols.map(function (c) { return colValue(c[0], c[1].a); });
+        var dim = new Date(Date.UTC(v[0], v[1], 0)).getUTCDate();   /* 그달의 마지막 날을 넘지 않게 */
+        sendTime(v[0], v[1], Math.min(v[2], dim), v[3], v[4], 0);
+      }
+      $('modal').classList.add('hidden');
+      $('modal').onclick = null;
+    };
+  }
+
+  /* ── 로그 팝업(콘 build_log_tab): 일반 로그 + Dev Log(일시멈춤, 저장 문턱, 레벨 보기, 태그). 닫으면 설정으로(콘과 같음) ── */
+  var logPaused = false;
+  function openLogs() {
+    logPaused = false;
+    openSheet(renderLogs);
+    clearInterval(setTimer);
+    loadLogs(true);
+    clearInterval(logTimer);
+    logTimer = setInterval(function () { if (sheetRender === renderLogs) loadLogs(false); }, 2000);
+  }
+  function renderLogs() {
+    var dv = cfg.dev, names = ['', 'E', 'W', 'I', 'D'];
+    var h = '<div class="shead"><h3>' + esc(S('STR_TAB_LOG')) + '</h3><button class="xbtn" id="logBack" aria-label="close">&#x2715;</button></div>';
+    h += gtitle(S('STR_PANEL_GENERAL_LOG')) + '<div class="logbox" id="logGen" style="margin-top:8px"></div>';
+    h += '<div class="gtitle" style="display:flex;justify-content:space-between;align-items:center"><span>' + esc(S('STR_PANEL_DEV_LOG')) +
+         '</span><button class="small" id="logPause">' + esc(S(logPaused ? 'STR_BTN_RESUME' : 'STR_BTN_PAUSE')) + '</button></div>';
+    h += '<div class="btnrow" style="align-items:center;border-bottom:none">Save <select id="devSave">' + [1, 2, 3, 4].map(function (l) {
+      return '<option value="' + l + '"' + (l === dv.save ? ' selected' : '') + '>' + names[l] + '</option>';
+    }).join('') + '</select>';
+    for (var l = 1; l <= 4; l++) {
+      h += '<label class="lvl"><input type="checkbox" data-lvl="' + l + '"' + ((dv.mask >> l) & 1 ? ' checked' : '') + (l > dv.save ? ' disabled' : '') + '>' + names[l] + '</label>';
+    }
+    h += '<select id="devTag">' + dv.tags.map(function (t, i) { return '<option value="' + i + '"' + (i === dv.tag ? ' selected' : '') + '>' + esc(t) + '</option>'; }).join('') + '</select></div>';
+    h += '<div class="logbox" id="logDev"></div>';
+    $('sheetBody').innerHTML = h;
+    $('logBack').addEventListener('click', function () { clearInterval(logTimer); openSettings(); });
+    $('logPause').addEventListener('click', function () { logPaused = !logPaused; this.textContent = S(logPaused ? 'STR_BTN_RESUME' : 'STR_BTN_PAUSE'); if (!logPaused) loadLogs(true); });
+    $('devSave').addEventListener('change', function () {
+      var v = +this.value;
+      setKeyVal('dev_save', v).then(function () { cfg.dev.save = v; renderLogs(); loadLogs(true); }).catch(function () {});
+    });
+    $('devTag').addEventListener('change', function () {
+      var v = +this.value;
+      setKeyVal('dev_tag', v).then(function () { cfg.dev.tag = v; loadLogs(true); }).catch(function () {});
+    });
+    $('sheetBody').querySelectorAll('[data-lvl]').forEach(function (el) {
+      el.addEventListener('change', function () {
+        var m = 0;
+        $('sheetBody').querySelectorAll('[data-lvl]').forEach(function (x) { if (x.checked) m |= 1 << +x.getAttribute('data-lvl'); });
+        setKeyVal('dev_mask', m).then(function () { cfg.dev.mask = m; loadLogs(true); }).catch(function () {});
+      });
+    });
+  }
+  /* 새 글이 오면 맨 아래로 — 사용자가 위로 올려 읽는 중이면 그대로 둠 */
+  function putLog(id, text, force) {
+    var el = $(id);
+    if (!el || el.textContent === text) return;
+    var atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
+    el.textContent = text;
+    if (force || atBottom) el.scrollTop = el.scrollHeight;
+  }
+  function loadLogs(force) {
+    apiText('api/logs?kind=gen').then(function (t) { putLog('logGen', t, force); }).catch(function () {});
+    if (logPaused) return;   /* 콘: 일시멈춤은 Dev Log 화면만 멈춤(줄은 계속 쌓임) */
+    apiText('api/logs?kind=dev').then(function (t) { putLog('logDev', t, force); }).catch(function () {});
+  }
+
+  /* ── 통계 팝업(콘 build_stats_tab과 같은 기능): 개괄(기간, 공기 T/H 정밀·간이 탭 전환, Agar 혼합→슬롯 순환), 그래프(2026-11-14 — 콘과
+   *    같은 보기: 1단 묶음·종류별/기기별·페이지, 2단 legend, 평균선, << >> 또는 좌우 밀기 = 이전·다음 창, 탭 = 그 칸의 값), 기록 팝업(28개씩, 전체 삭제).
+   *    칸 값·추세·저신뢰·개괄 계산은 전부 콘(/api/stats, 콘 화면과 같은 함수) — 여기는 정규화(0~100)와 그리기만 ── */
+  var SCALE_SEC = [3600, 43200, 86400, 259200, 604800];
+  var XSTEP_SEC = [600, 3600, 7200, 43200, 86400];     /* 콘 s_stats_xaxis_interval_sec */
+  var GAP_REF = [70, 60, 50, 40, 30, 20];                     /* 콘 s_stats_gap_ref_height — 창에 실측이 없을 때의 점선 높이 */
+  var CHAN_STR = { 1: ['STR_CHAN_LABEL_TEMP_C', 'STR_CHAN_UNIT_TEMP_C'], 2: ['STR_CHAN_LABEL_HUMI_PCT', 'STR_CHAN_UNIT_HUMI_PCT'],
+                   3: ['STR_CHAN_LABEL_CO2_PPM', 'STR_CHAN_UNIT_CO2_PPM'], 4: ['STR_CHAN_LABEL_NH3_PPM', 'STR_CHAN_UNIT_NH3_PPM'] };
+  /* 2026-11-14(사용자 설계 — 콘과 같은 보기) — 1단: 묶음(T/H, Gas, Basic) > 보기(종류별, 기기별) > 페이지(T, H, Agar 또는 보드). 고른 색은 단계마다 */
+  var CAT_KEYS = ['STR_GRAPH_CAT_TH', 'STR_VIEW_GROUP_GAS', 'STR_PRECISION_BASIC'], MODE_KEYS = ['STR_GRAPH_KIND', 'STR_GRAPH_DEVICE'];
+  var KIND_KEYS = ['STR_GRAPH_AIRT', 'STR_GRAPH_AIRH', 'STR_GRAPH_AGART'], LEVEL_COL = ['#2196f3', '#ef6c00', '#9c27b0'];
+  var st = null, statsTimer = null, stSeq = 0;
+  function slotColor(i) {   /* 2026-11-14 — 색은 콘이 정함(col, 슬롯의 종류·번호). 검정은 글자색(어두운 화면) */
+    var sl = st && st.data && st.data.slots[i], c = sl && sl.col;
+    return (!c || c === '#000000') ? getComputedStyle(document.body).color : c;
+  }
+  function prec(p) { return S(p ? 'STR_PRECISION_PRECISE' : 'STR_PRECISION_BASIC'); }
+  function f2(v) { return Number(v).toFixed(2); }
+  function statsBlockedSd(e) { return e && e.message === 'HTTP 503'; }
+
+  function openStats() {
+    if (last && last.sd && last.sd.state === 'io_error') { alert(S('STR_MSG_STATS_BLOCKED_SD_FAIL')); return; }   /* 콘 cb_stats_btn_tap과 같음 */
+    st = st || { scale: 0, cat: 0, mode: 0, kind: 0, dev: 0, ovT: true, ovH: true };
+    st.ovT = st.ovH = true;   /* 2026-10-23(사용자 설계) — 열 때마다 개괄은 정밀(기본), 간이는 탭해서 교대 */
+    st.offset = 0;
+    st.data = null;
+    openSheet(renderStats);
+    loadStats(true);
+    startStatsTimer();
+  }
+  /* 콘처럼 1분마다 다시 받음(가장 짧은 그래프 칸이 1분) */
+  function startStatsTimer() {
+    clearInterval(statsTimer);
+    statsTimer = setInterval(function () { if (sheetRender === renderStats) loadStats(false); }, 60000);
+  }
+  function loadStats(withBusy) {
+    var seq = ++stSeq;
+    if (withBusy) busyStart('LOADING');
+    api('api/stats?scale=' + st.scale + '&offset=' + st.offset + '&cat=' + st.cat + '&mode=' + st.mode + '&kind=' + st.kind + '&dev=' + st.dev)
+      .then(function (d) {
+        if (seq !== stSeq) return;
+        busyEnd();
+        st.data = d;
+        st.cat = d.view.cat; st.mode = d.view.mode; st.kind = d.view.kind; st.dev = d.view.dev;   /* 없는 묶음·보드는 콘이 바꿈 */
+        if (sheetRender === renderStats) renderStats();
+      })
+      .catch(function (e) {
+        if (seq !== stSeq) return;
+        busyEnd();
+        if (e && e.handled) return;
+        if (statsBlockedSd(e)) { alert(S('STR_MSG_STATS_BLOCKED_SD_FAIL')); closeSheet(); return; }
+        toast('Error');
+      });
+  }
+
+  /* 개괄 한 줄 — 탭 가능한 줄은 "라벨[단위]:"가 역상(콘과 같음). 값 = 최대 / 최소 / 평균 */
+  function ovRow(key, label, unitKey, m) {
+    if (!key && !m) return '<div class="ovrow"><span>' + esc(label + ': ' + S('STR_STATS_OVERVIEW_NO_DATA')) + '</span></div>';
+    var head = label + '[' + S(unitKey) + ']:';
+    var val = m ? f2(m[0]) + ' / ' + f2(m[1]) + ' / ' + f2(m[2]) : S('STR_STATS_OVERVIEW_NO_DATA');
+    return '<div class="ovrow' + (key ? ' tap" data-ov="' + key : '') + '">' + (key ? '<span class="badge">' + esc(head) + '</span>' : '<span>' + esc(head) + '</span>') +
+           '<span>' + esc(val) + '</span></div>';
+  }
+  /* 2026-10-23(센서 중심 구조) — 센싱 이름: 배지 = "Agar N T", 공기 = "Air T(정밀)", 가스 = 값 이름(콘 stats_sensing_label과 같음) */
+  function sensLabel(it) {
+    if (it.sub) return fmt(S('STR_AGAR_SLOT_FMT'), it.ord || 1) + ' ' + S('STR_CHAN_LABEL_TEMP_C');
+    if (it.chan === 1 || it.chan === 2) return S(it.chan === 1 ? 'STR_OVERVIEW_AIR_TEMP' : 'STR_OVERVIEW_AIR_HUMI') + '(' + prec(it.prec) + ')';
+    var cs = CHAN_STR[it.chan];
+    return cs ? S(cs[0]) : '#' + it.chan;
+  }
+  /* 2026-11-14(사용자 결정) — 선 이름: "별명 T"·"별명 Agar1"(종류별), "T"·"Agar1"(기기별), 평균선 "평균 T". kn이 없으면 옛 이름 */
+  function slotLabel(sl) {
+    if (!sl.kn) return sensLabel(sl);
+    if (sl.avg) return fmt(S('STR_GRAPH_AVG_FMT'), sl.kn);
+    return sl.al !== undefined ? L(sl, 'al') + ' ' + sl.kn : sl.kn;
+  }
+  function gbtn(lv, on, attr, text) {
+    return '<button class="small" ' + attr + (on ? ' style="background:' + LEVEL_COL[lv] + ';border-color:' + LEVEL_COL[lv] + ';color:#fff"' : '') + '>' + esc(text) + '</button>';
+  }
+
+  function renderStats() {
+    var h = '<div class="shead"><h3 class="grow">' + esc(S('STR_TAB_STATISTICS')) + '</h3><button class="small" id="stRec">' + esc(S('STR_BTN_RECORD')) +
+            '</button><button class="small" id="stBk">' + esc(S('STR_BTN_BACKUP')) +   /* 10-16 — 통계 백업(사용자 결정: 기록 보기 옆) */
+            '</button><button class="xbtn" data-act="close" aria-label="close">&#x2715;</button></div>';
+    h += '<div class="field"><strong>' + esc(S('STR_PANEL_STATS_OVERVIEW')) + '</strong><span>' + esc(S('STR_LABEL_PERIOD')) + ' <select id="stScale">' +
+         S('STR_STATS_SCALE_OPTIONS').split('\n').map(function (t, i) { return '<option value="' + i + '"' + (i === st.scale ? ' selected' : '') + '>' + esc(t) + '</option>'; }).join('') +
+         '</select></span></div>';
+    var d = st.data;
+    if (!d) { $('sheetBody').innerHTML = h; bindStats(); return; }
+    /* 2026-11-14(사용자 설계 — 개요, 콘과 같음) — 순서 Air T, Air H, Agar T, 그다음 CO2·암모니아. 공기 = 정밀 평균(d.tp/d.hp = 창에 정밀
+     * 기록이 있음, 없으면 간이), 탭하면 정밀 <-> 간이. Agar = 배지 평균만(탭 없음). 기기가 없으면 줄을 숨김 */
+    var ov = d.ov, has = ov.has;
+    h += '<div class="ovgrid">' +
+         (has.air ? ovRow('t', S('STR_OVERVIEW_AIR_TEMP') + '(' + prec(d.tp && st.ovT) + ')', 'STR_CHAN_UNIT_TEMP_C', ov.air_t[d.tp && st.ovT ? 1 : 0]) +
+                    ovRow('h', S('STR_OVERVIEW_AIR_HUMI') + '(' + prec(d.hp && st.ovH) + ')', 'STR_CHAN_UNIT_HUMI_PCT', ov.air_h[d.hp && st.ovH ? 1 : 0]) : '') +
+         (has.agar ? ovRow('', S('STR_OVERVIEW_AGAR_TEMP'), 'STR_CHAN_UNIT_TEMP_C', ov.agar) + '<div></div>' : '') +
+         (has.co2 ? ovRow('', S('STR_CHAN_LABEL_CO2_PPM'), 'STR_CHAN_UNIT_CO2_PPM', ov.co2) : '') +
+         (has.nh3 ? ovRow('', S('STR_CHAN_LABEL_NH3_PPM'), 'STR_CHAN_UNIT_NH3_PPM', ov.nh3) : '') + '</div>';
+    /* 그래프 */
+    var v = d.view, th = v.cat === 0 && d.has[0];
+    h += '<div class="grp"><span class="gseg">' + CAT_KEYS.map(function (k, c) { return d.has[c] ? gbtn(0, c === v.cat, 'data-cat="' + c + '"', S(k)) : ''; }).join('') + '</span>';
+    if (th) {
+      h += '<span class="gseg">' + MODE_KEYS.map(function (k, m) { return gbtn(1, m === v.mode, 'data-mode="' + m + '"', S(k)); }).join('') + '</span>';
+      h += '<span class="gseg">' + (v.mode === 0
+        ? KIND_KEYS.map(function (k, i) { return gbtn(2, i === v.kind, 'data-kind="' + i + '"', S(k)); })
+        : d.devs.map(function (dv, i) { return gbtn(2, i === v.dev, 'data-dev="' + i + '"', L(dv, 'al')); })).join('') + '</span>';
+    }
+    h += '<span class="grow"></span><button class="small" data-pan="1">&lt;&lt;</button><button class="small" data-pan="-1"' +
+         (st.offset === 0 ? ' disabled' : '') + '>&gt;&gt;</button></div>';
+    var mx = '', mn = '';
+    h += '<div class="slots">' + d.slots.map(function (sl, i) {
+      var c = slotColor(i);
+      /* 2026-11-14 — 같은 단위는 축이 하나(콘이 합침) — 최대·최소는 그 단위의 첫 선에만, 선이 여럿이면 회색 */
+      var same = d.slots.filter(function (o) { return o.chan === sl.chan; }), lead = d.slots.findIndex(function (o) { return o.chan === sl.chan; }) === i;
+      var lc = same.length > 1 ? '#616161' : c;
+      if (lead && sl.min !== undefined) {
+        var u = S(CHAN_STR[sl.chan][1]);
+        /* 10-28 — min/max = 축 아래·위(콘이 최소 폭까지 넓힌 값), 자릿수 = 값의 최소 단위(dec) */
+        mx += '<span style="color:' + lc + '">' + esc(Number(sl.max).toFixed(sl.dec) + u) + '</span>';
+        mn += '<span style="color:' + lc + '">' + esc(Number(sl.min).toFixed(sl.dec) + u) + '</span>';
+      }
+      return '<span class="slot"><i style="background:' + c + '"></i><span>' + esc(slotLabel(sl)) + '</span></span>';
+    }).join('') + '</div>';
+    h += '<div class="mmrow">' + mx + '</div><div class="chartwrap"><canvas id="stChart"></canvas><div id="stTip" class="tip hidden"></div></div>' +
+         '<div class="mmrow">' + mn + '</div><div class="xax" id="stXax"></div>';
+    $('sheetBody').innerHTML = h;
+    bindStats();
+    drawStats();
+  }
+
+  /* 콘 refresh_stats_graph의 그리기 부분: 계열마다 창 안 최소~최대를 0~100으로, 실선/점선은 칸마다 배타적으로 배정하되
+   * 저신뢰와 맞닿은 칸은 양쪽에 넣어 이어 붙임. 창에 실측이 하나도 없으면 고정 높이 점선 */
+  var SP = 6;
+  function drawStats() {
+    var cv = $('stChart');
+    if (!cv || !st.data) return;
+    var w = cv.clientWidth, h = cv.clientHeight, dpr = window.devicePixelRatio || 1, N = 60;
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+    var g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    function X(i) { return SP + (w - 2 * SP) * i / (N - 1); }
+    function Y(n) { return SP + (h - 2 * SP) * (1 - n / 100); }
+    g.setLineDash([]);
+    g.lineWidth = 1;
+    g.strokeStyle = 'rgba(127,127,127,.25)';
+    for (var k = 0; k <= 4; k++) { g.beginPath(); g.moveTo(SP, Math.round(Y(k * 25)) + 0.5); g.lineTo(w - SP, Math.round(Y(k * 25)) + 0.5); g.stroke(); }
+    st.pts = [];
+    function line(a, dash) {
+      g.setLineDash(dash);
+      g.beginPath();
+      var on = false;
+      for (var i = 0; i < N; i++) {
+        if (a[i] === null) { on = false; continue; }
+        if (on) g.lineTo(X(i), Y(a[i])); else { g.moveTo(X(i), Y(a[i])); on = true; }
+      }
+      g.stroke();
+    }
+    st.data.slots.forEach(function (sl, s) {
+      st.pts[s] = null;
+      var span = (sl.min !== undefined && sl.max > sl.min) ? sl.max - sl.min : 0;
+      var norm = sl.tr.map(function (t) {
+        if (t === null) return null;
+        var n = span > 0 ? Math.floor((t - sl.min) / span * 100 + 0.5) : 50;
+        return Math.max(0, Math.min(100, n));
+      });
+      function lo(i) { return sl.lo.charAt(i) === '1' || (sl.pt && sl.pt.charAt(i) === '1'); }   /* 11-14 — 평균선의 빠진 칸도 점선 */
+      var solid = [], dashed = [];
+      for (var i = 0; i < N; i++) {
+        if (norm[i] === null) { solid[i] = null; dashed[i] = GAP_REF[s]; continue; }
+        var nb = (i > 0 && lo(i - 1) && norm[i - 1] !== null) || (i + 1 < N && lo(i + 1) && norm[i + 1] !== null);
+        solid[i] = lo(i) ? null : norm[i];
+        dashed[i] = (lo(i) || nb) ? norm[i] : null;
+      }
+      st.pts[s] = norm;
+      g.strokeStyle = slotColor(s);
+      g.lineWidth = 2;
+      line(solid, []);
+      line(dashed, [4, 4]);
+    });
+    /* X축: 오른쪽 끝 = 이 창의 끝, 라벨 = 지금부터 얼마나 전(콘 refresh_stats_graph_x_labels) */
+    var sec = SCALE_SEC[st.data.scale], step = XSTEP_SEC[st.data.scale], cnt = Math.min(sec / step + 1, 13), xs = '';
+    /* 휴대폰 폭에선 라벨이 겹침 — 라벨 사이가 34px보다 좁으면 오른쪽(0)부터 k칸마다 하나씩만 */
+    var kx = Math.max(1, Math.ceil(34 * (cnt - 1) / Math.max(1, $('stXax').clientWidth)));
+    for (var i = 0; i < cnt; i += kx) {
+      var inW = i * step, ago = inW + st.data.offset * sec, frac = 1 - inW / sec, t;
+      if (ago === 0) t = '0';
+      else if (step % 86400 === 0) t = '-' + Math.floor(ago / 86400) + 'd';
+      else if (step % 3600 === 0) t = '-' + Math.floor(ago / 3600) + 'h';
+      else t = '-' + Math.floor(ago / 60) + 'm';
+      xs += '<span style="left:' + (frac * 100) + '%' + (frac >= 1 ? ';transform:translateX(-100%)' : frac <= 0 ? ';transform:none' : '') + '">' + t + '</span>';
+    }
+    $('stXax').innerHTML = xs;
+    st.geom = { w: w, h: h, X: X, Y: Y };
+  }
+
+  /* 그래프 탭 — 가장 가까운 칸에서 실측값이 있는 계열 중 탭 높이에 가장 가까운 것(콘 cb_stats_chart_tap) */
+  function statsTap(ev) {
+    var gm = st.geom, d = st.data;
+    if (!gm || !d) return;
+    var r = $('stChart').getBoundingClientRect(), x = ev.clientX - r.left, y = ev.clientY - r.top;
+    /* 11-15 — 실측값이 있는 칸 중 가장 가까운 칸(CO2처럼 측정 간격이 칸보다 길면 실측 칸이 드묾). 칸 5개보다 멀면 표시 안 함(콘 STATS_TAP_MAX_DX) */
+    var fx = (x - SP) / (gm.w - 2 * SP) * 59, i = -1, bx = 1e9;
+    for (var k = 0; k < 60; k++) {
+      var ok = d.slots.some(function (sl, s) { return st.pts[s] && sl.v[k] !== null && st.pts[s][k] !== null; });
+      if (ok && Math.abs(k - fx) < bx) { bx = Math.abs(k - fx); i = k; }
+    }
+    if (i < 0 || bx > 5) { $('stTip').classList.add('hidden'); return; }
+    var best = -1, bd = 1e9;
+    d.slots.forEach(function (sl, s) {
+      if (!st.pts[s] || sl.v[i] === null || st.pts[s][i] === null) return;
+      var dd = Math.abs(gm.Y(st.pts[s][i]) - y);
+      if (dd < bd) { bd = dd; best = s; }
+    });
+    var tip = $('stTip');
+    if (best < 0) { tip.classList.add('hidden'); return; }
+    var sl = d.slots[best];
+    tip.textContent = S(CHAN_STR[sl.chan][0]) + ': ' + f2(sl.v[i]) + S(CHAN_STR[sl.chan][1]);
+    tip.classList.remove('hidden');
+    var px = gm.X(i), py = gm.Y(st.pts[best][i]), tw = tip.offsetWidth, th = tip.offsetHeight;
+    var tx = Math.max(0, Math.min(gm.w - tw, px - tw / 2)), ty = py - th - 6;
+    if (ty < 0) ty = py + 6;
+    tip.style.left = tx + 'px';
+    tip.style.top = Math.min(gm.h - th, ty) + 'px';
+  }
+
+  function statsPan(older) {
+    if (older) st.offset++;
+    else if (st.offset > 0) st.offset--;
+    else return;
+    loadStats(true);
+  }
+
+  function bindStats() {
+    var body = $('sheetBody');
+    var sc = $('stScale');
+    if (sc) sc.addEventListener('change', function () { st.scale = +this.value; st.offset = 0; loadStats(true); });   /* 콘: 기간을 바꾸면 지금 창으로 */
+    var rb = $('stRec');
+    if (rb) rb.addEventListener('click', openRecord);
+    var bb = $('stBk');
+    if (bb) bb.addEventListener('click', openBackup);
+    body.querySelectorAll('[data-ov]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var k = el.getAttribute('data-ov');
+        if (k === 't') st.ovT = !st.ovT; else if (k === 'h') st.ovH = !st.ovH;
+        renderStats();
+      });
+    });
+    /* 2026-11-14 — 1단 단추: 묶음·보기·페이지(T/H/Agar 또는 보드) */
+    [['data-cat', 'cat'], ['data-mode', 'mode'], ['data-kind', 'kind'], ['data-dev', 'dev']].forEach(function (p) {
+      body.querySelectorAll('[' + p[0] + ']').forEach(function (el) {
+        el.addEventListener('click', function () { st[p[1]] = +el.getAttribute(p[0]); loadStats(true); });
+      });
+    });
+    body.querySelectorAll('[data-pan]').forEach(function (el) {
+      el.addEventListener('click', function () { statsPan(el.getAttribute('data-pan') === '1'); });
+    });
+    var cv = $('stChart');
+    if (!cv) return;
+    cv.addEventListener('click', statsTap);
+    var t0 = null;   /* 좌우로 밀기 = 이전·다음 창(오른쪽으로 밀면 과거) */
+    cv.addEventListener('touchstart', function (e) { t0 = e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null; }, { passive: true });
+    cv.addEventListener('touchend', function (e) {
+      if (!t0 || !e.changedTouches.length) return;
+      var dx = e.changedTouches[0].clientX - t0.x, dy = e.changedTouches[0].clientY - t0.y;
+      t0 = null;
+      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) statsPan(dx > 0);
+    }, { passive: true });
+  }
+  window.addEventListener('resize', function () {
+    if (sheetRender === renderStats) drawStats();
+    if (sheetRender === renderRecord && rec.data) renderRecord();   /* 가로·세로가 바뀌면 한 벌 <-> 두 벌 */
+  });
+
+  /* ── 기록 팝업(콘 build_record_tab): 최신이 위, 28개씩, << 10 / < = 더 오래된 쪽, 전체 삭제(확인) ── */
+  var rec = { page: 0, data: null };
+  function fmtCapped(v) { var a = Math.abs(v); return Number(v).toFixed(a < 100 ? 2 : a < 1000 ? 1 : 0); }   /* 콘 format_value_capped(총 4자리) */
+  function openRecord() {
+    rec.page = 0;
+    rec.data = null;
+    openSheet(renderRecord);
+    loadRecord();
+  }
+  /* 10-09(사용자 지시) — 콘 화면처럼 새 기록이 들어오면 표를 갱신. 주화면 내용(WebSocket)의 rec(기록 번호)가 바뀌었고, 기록 표를
+   * 맨 앞(최신) 페이지로 보고 있을 때만 조용히 다시 받음(옛 페이지를 보는 중엔 그대로) */
+  /* 10-21(사용자 — 주기·수동 촬영 뒤 목록이 그대로) — 주화면 내용의 ph(사진 목록 번호)가 바뀌면 카메라 팝업 목록을 다시 받음.
+   * 맨 앞 페이지를 보고 있을 때만(옛 페이지를 넘겨 보는 중엔 그대로). 고른 사진은 남아 있으면 그대로 */
+  var phSeq = null;
+  function photoAutoRefresh(seq) {
+    if (seq == null) return;
+    var changed = phSeq !== null && seq !== phSeq;
+    phSeq = seq;
+    if (changed && sheetRender === renderCamera && cam && cam.page === 0 && cam.data) loadPhotos();
+  }
+  var recSeq = null;
+  function recAutoRefresh(seq) {
+    if (seq == null) return;
+    var changed = recSeq !== null && seq !== recSeq;
+    recSeq = seq;
+    if (changed && sheetRender === renderRecord && rec.page === 0 && rec.data) loadRecord(true);
+  }
+  function loadRecord(quiet) {
+    if (!quiet) busyStart('LOADING');
+    api('api/stats/records?page=' + rec.page).then(function (d) {
+      if (!quiet) busyEnd();
+      rec.data = d;
+      if (sheetRender === renderRecord) renderRecord();
+    }).catch(function (e) {
+      if (!quiet) busyEnd();
+      if (e && e.handled) return;
+      if (quiet) return;
+      if (statsBlockedSd(e)) { alert(S('STR_MSG_STATS_BLOCKED_SD_FAIL')); closeSheet(); return; }
+      toast('Error');
+    });
+  }
+  function renderRecord() {
+    var h = '<div class="shead"><h3 class="grow">' + esc(S('STR_TITLE_RECORD')) + '</h3><button class="small danger" id="recDel">' + esc(S('STR_BTN_DELETE_STATS')) +
+            '</button><button class="xbtn" id="recBack" aria-label="close">&#x2715;</button></div>';
+    var d = rec.data;
+    if (d) {
+      /* 10-05(사용자 지시) — 가로면 콘처럼 두 벌. 채우는 순서는 왼쪽 열이 다 찬 뒤 오른쪽 열(최신 = 왼쪽 맨 위) */
+      var two = window.matchMedia('(orientation: landscape)').matches, sets = two ? 2 : 1;
+      var head = '<th>' + esc(S('STR_STATS_TABLE_HEADER_ITEM')) + '</th><th>' + esc(S('STR_STATS_TABLE_HEADER_VALUE')) + '</th><th>' + esc(S('STR_STATS_TABLE_HEADER_TIME')) + '</th>';
+      function cells(it) {
+        if (!it) return '<td></td><td></td><td class="rsep"></td>';
+        var cs = CHAN_STR[it.chan];
+        return '<td>' + esc(sensLabel(it)) + '</td><td>' + esc(fmtCapped(it.v) + (cs ? S(cs[1]) : '')) + '</td><td class="rsep">' +
+               new Date(it.t * 1000).toISOString().substr(11, 8) + '</td>';
+      }
+      h += '<table class="rtable' + (two ? ' two' : '') + '"><thead><tr>' + head + (two ? head : '') + '</tr></thead><tbody>';
+      if (!d.items.length) h += '<tr><td colspan="' + 3 * sets + '">' + esc(S('STR_STATS_TABLE_EMPTY')) + '</td></tr>';
+      var rows = Math.ceil(d.items.length / sets);
+      for (var r = 0; r < rows; r++) h += '<tr>' + cells(d.items[r]) + (two ? cells(d.items[r + rows]) : '') + '</tr>';
+      h += '</tbody></table>';
+      var pages = Math.max(1, Math.ceil(d.count / d.page_size)), older = rec.page + 1 < pages, newer = rec.page > 0;
+      h += '<div class="pager"><button class="small" data-rpg="10"' + (older ? '' : ' disabled') + '>' + esc(S('STR_BTN_JUMP_PREV10')) + '</button><button class="small" data-rpg="1"' +
+           (older ? '' : ' disabled') + '>&lt;</button><span class="sub">' + (rec.page + 1) + ' / ' + pages + '</span><button class="small" data-rpg="-1"' + (newer ? '' : ' disabled') +
+           '>&gt;</button><button class="small" data-rpg="-10"' + (newer ? '' : ' disabled') + '>' + esc(S('STR_BTN_JUMP_NEXT10')) + '</button></div>';
+    }
+    $('sheetBody').innerHTML = h;
+    /* 콘: 기록 팝업을 닫으면 통계 팝업. 10-13 — 표를 보는 동안엔 1분 갱신이 건너뛰므로 닫을 때 바로 다시 받음(콘은 타이머가 계속 돎) */
+    $('recBack').addEventListener('click', function () { openSheet(renderStats); loadStats(false); startStatsTimer(); });
+    $('recDel').addEventListener('click', function () {
+      if (!confirm(S('STR_CONFIRM_DELETE_STATS'))) return;
+      post('api/stats/delete_all').then(function () { rec.page = 0; loadRecord(); }).catch(function (e) { if (!(e && e.handled)) toast('Error'); });
+    });
+    $('sheetBody').querySelectorAll('[data-rpg]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var pages = Math.max(1, Math.ceil(rec.data.count / rec.data.page_size));
+        rec.page = Math.min(pages - 1, Math.max(0, rec.page + (+b.getAttribute('data-rpg'))));
+        loadRecord();
+      });
+    });
+  }
+
+  /* ── 전체 화면 보기(웹 전용): 두 손가락 확대·이동, 두 번 탭 = 2배/원래대로. 페이지 확대는 막혀 있어 여기서 직접 처리 ── */
+  var vz = { s: 1, x: 0, y: 0 };
+  function vApply() { $('viewerImg').style.transform = 'translate(-50%,-50%) translate(' + vz.x + 'px,' + vz.y + 'px) scale(' + vz.s + ')'; }
+  function openViewer(url) {
+    vz = { s: 1, x: 0, y: 0 };
+    $('viewerImg').src = url;
+    vApply();
+    $('viewer').classList.remove('hidden');
+  }
+  $('viewerX').addEventListener('click', function () { $('viewer').classList.add('hidden'); $('viewerImg').src = ''; });
+  (function () {
+    var v = $('viewer'), t0 = null, lastTap = 0;
+    function dist(t) { var dx = t[0].clientX - t[1].clientX, dy = t[0].clientY - t[1].clientY; return Math.sqrt(dx * dx + dy * dy); }
+    v.addEventListener('touchstart', function (e) {
+      if (e.touches.length === 2) t0 = { d: dist(e.touches), s: vz.s };
+      else if (e.touches.length === 1) {
+        var now = Date.now();
+        if (now - lastTap < 300) { vz = vz.s > 1 ? { s: 1, x: 0, y: 0 } : { s: 2, x: 0, y: 0 }; vApply(); lastTap = 0; return; }
+        lastTap = now;
+        t0 = { px: e.touches[0].clientX - vz.x, py: e.touches[0].clientY - vz.y };
+      }
+    }, { passive: true });
+    v.addEventListener('touchmove', function (e) {
+      if (!t0) return;
+      if (e.touches.length === 2 && t0.d) { vz.s = Math.min(6, Math.max(1, t0.s * dist(e.touches) / t0.d)); if (vz.s === 1) { vz.x = vz.y = 0; } }
+      else if (e.touches.length === 1 && t0.px !== undefined && vz.s > 1) { vz.x = e.touches[0].clientX - t0.px; vz.y = e.touches[0].clientY - t0.py; }
+      vApply();
+    }, { passive: true });
+    v.addEventListener('touchend', function (e) { if (e.touches.length === 0) t0 = null; }, { passive: true });
+  })();
+
+  /* 시트 닫기(X), 행 탭 → 장치 팝업 */
+  $('sheet').addEventListener('click', function (ev) {
+    var t = ev.target.closest('[data-act]');
+    if (t && t.getAttribute('data-act') === 'close') closeSheet();
+  });
+  $('mainView').addEventListener('click', function (ev) {
+    if (ev.target.closest('[data-campop]')) { openCamera(); return; }
+    if (ev.target.closest('[data-statspop]')) { openStats(); return; }     /* 센서 판넬 제목 → 통계 팝업(콘과 같음) */   /* 카메라 판넬 제목 → 카메라 팝업(콘과 같음) */
+    var rrow = ev.target.closest('[data-relay]');
+    if (rrow) { openRelay(+rrow.getAttribute('data-relay')); return; }
+    var row = ev.target.closest('[data-dev]');
+    if (row) openDevice(row.getAttribute('data-dev'));
+  });
+
+  /* 10-03 — iPhone(Chrome)에서 배율이 1.07로 남아 왼쪽이 비고 오른쪽이 잘림(원인 미확정). 배율이 1이 아니면 viewport 설정을
+   * 다시 적용해 1배로 되돌리고 가로 위치도 0으로. 열 때·크기 바뀔 때·입력 마칠 때·팝업 닫을 때 확인 */
+  var vpMeta = document.querySelector('meta[name=viewport]');
+  var VP = 'width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover';
+  function fixZoom() {
+    var vv = window.visualViewport;
+    if (!vv || Math.abs(vv.scale - 1) < 0.005) { if (window.scrollX) window.scrollTo(0, window.scrollY); return; }
+    vpMeta.setAttribute('content', VP + ', minimum-scale=1');   /* 설정을 바꿨다가 */
+    setTimeout(function () { vpMeta.setAttribute('content', VP); window.scrollTo(0, window.scrollY); }, 50);  /* 되돌려 다시 계산시킴 */
+  }
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', function () { setTimeout(fixZoom, 300); });
+  document.addEventListener('focusout', function () { setTimeout(fixZoom, 300); });
+  window.addEventListener('pageshow', function () { setTimeout(fixZoom, 300); });
+
+  applyTexts();
+  poll();
+  setTimeout(fixZoom, 500);
+})();
+</script>
+</body>
+</html>
