@@ -348,7 +348,8 @@
     RM_USER: ['사용자', 'User'], RM_CONNECT: ['연결', 'Connect'], RM_FAILED: ['브로커에 연결하지 못했습니다', 'Could not connect to the broker'],
     RM_READONLY: ['원격 접속에서는 볼 수만 있습니다', 'Remote access is view-only'],
     RM_NO_BROKER: ['브로커에 연결되지 않음', 'Broker not reachable'], RM_NO_SITE: ['이 현장 이름의 제어기가 없음', 'No CNTL with this site name'],
-    RM_CNTL_OFF: ['제어기가 브로커에 연결되어 있지 않음', 'CNTL is not connected to the broker'], RM_NO_REPLY: ['제어기 응답 없음', 'No reply from CNTL']
+    RM_CNTL_OFF: ['제어기가 브로커에 연결되어 있지 않음', 'CNTL is not connected to the broker'], RM_NO_REPLY: ['제어기 응답 없음', 'No reply from CNTL'],
+    RM_CONNECTING: ['브로커에 연결 중', 'Connecting to broker'], RM_CHECKING: ['제어기 확인 중', 'Checking CNTL'], RM_WAITING: ['제어기 응답 기다리는 중', 'Waiting for CNTL']
   };
   /* 센서 채널 종류(esp_now_link.h SENSOR_CHAN_*) → 콘 주화면과 같은 글자·단위 */
   var CHAN = { 1: ['T', 'STR_CHAN_UNIT_TEMP_C'], 2: ['H', 'STR_CHAN_UNIT_HUMI_PCT'], 3: ['C', 'STR_CHAN_UNIT_CO2_PPM'], 4: ['A', 'STR_CHAN_UNIT_NH3_PPM'] };
@@ -440,15 +441,22 @@
   function tunOpen(c) {
     var cid = ('0000000' + Math.floor(Math.random() * 0xffffffff).toString(16)).slice(-8);
     var t = { pend: {}, seq: 0, ok: false, waiters: [], reqT: 'ff/' + c.site + '/req/' + cid, resT: 'ff/' + c.site + '/res/' + cid,
-             stT: 'ff/' + c.site + '/status', status: '' };
+             stT: 'ff/' + c.site + '/status', status: '', stKnown: false };
     t.cli = mqtt.connect(c.url, { username: c.user, password: c.pass, clientId: 'ffw-' + cid, clean: true, protocolVersion: 4,
                                   reconnectPeriod: 3000, connectTimeout: 10000 });
     t.cli.on('connect', function () {
+      if (!t.stKnown) rmStage('RM_CHECKING');
       t.cli.subscribe([t.resT, t.stT], { qos: 1 }, function (err) {
         if (err) return;
-        t.ok = true;
-        var ws = t.waiters; t.waiters = [];
-        ws.forEach(function (w) { clearTimeout(w.tm); w.res(); });
+        /* 11-22 — 콘 상태(retained)는 구독 직후 바로 옴. 3초 안에 안 오면 그 현장 이름의 콘이 없는 것 — 응답을 30초 기다리지 않고 바로 알림 */
+        var go = function () {
+          t.stKnown = true;
+          if (t.ok) return;
+          t.ok = true;
+          var ws = t.waiters; t.waiters = [];
+          ws.forEach(function (w) { clearTimeout(w.tm); w.res(); });
+        };
+        if (t.status) go(); else { t.stGo = go; setTimeout(go, 3000); }
       });
     });
     t.cli.on('close', function () { t.ok = false; });
@@ -461,7 +469,7 @@
     });
     /* 콘 상태(콘이 남긴 retained "online", 끊기면 브로커가 "offline") — 응답이 없을 때 이유를 보여 주려고. 없으면 그 현장 이름의 콘이 없음 */
     t.cli.on('message', function (topic, m) {
-      if (topic === t.stT) { t.status = new TextDecoder().decode(m); return; }
+      if (topic === t.stT) { t.status = new TextDecoder().decode(m); if (t.stGo) { var g = t.stGo; t.stGo = null; g(); } return; }
       tunMsg(t, m);
     });
     return t;
@@ -511,6 +519,9 @@
     }
     var t = tun;
     return tunReady(t, 15000).then(function () {
+      if (!t.status) throw new Error('nosite');
+      if (t.status === 'offline') throw new Error('cntloff');
+      if (view !== 'main' || $('conn').textContent) rmStage('RM_WAITING');
       return new Promise(function (res, rej) {
         var id = ++t.seq, ct = (opts.headers && opts.headers['Content-Type']) || '', b = opts.body;
         var head = id + '\n' + (opts.method || 'GET') + ' /' + String(path).replace(/^\//, '') + '\n' + (lsGet(CK_KEY) || '') + '\n' + ct + '\n';
@@ -529,10 +540,14 @@
   }
   /* 원격에서 요청이 실패한 이유(연결 표시 글자) — 브로커 / 현장 이름 / 콘 꺼짐 / 콘 응답 없음 */
   function rmWhy(e) {
-    if (!REMOTE || !e || !e.message) return Wt('OFFLINE');
-    if (e.message === 'broker') return Wt('RM_NO_BROKER');
-    if (e.message !== 'timeout' || !tun) return Wt('OFFLINE');
-    return Wt(!tun.status ? 'RM_NO_SITE' : tun.status === 'offline' ? 'RM_CNTL_OFF' : 'RM_NO_REPLY');
+    var k = { broker: 'RM_NO_BROKER', nosite: 'RM_NO_SITE', cntloff: 'RM_CNTL_OFF', timeout: 'RM_NO_REPLY' }[REMOTE && e && e.message];
+    return Wt(k || 'OFFLINE');
+  }
+  /* 원격 — 첫 응답 전까지 어느 단계인지(회색 글자). 처음 열면 상단바만 남고 최대 45초 아무 표시가 없었음(11-22 아이폰) */
+  function rmStage(k) {
+    if (!REMOTE || (last && $('conn').textContent === '' && view === 'main')) return;   /* 이미 받는 중이면 그대로 */
+    $('conn').textContent = Wt(k);
+    $('conn').className = '';
   }
   if (REMOTE) {
     $('rmPwEye').addEventListener('click', function () {
@@ -2564,6 +2579,7 @@
   window.addEventListener('pageshow', function () { setTimeout(fixZoom, 300); });
 
   applyTexts();
+  if (REMOTE) { show('main'); rmStage('RM_CONNECTING'); }   /* 원격 — 열자마자 판넬 틀과 연결 단계 */
   poll();
   setTimeout(fixZoom, 500);
 })();
