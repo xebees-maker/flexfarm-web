@@ -1128,8 +1128,17 @@
 
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) { clearTimeout(timer); wsStop(); }
-    else if (view === 'main' || view === '') { wsNextTry = 0; poll(); }
+    else if (view === 'main' || view === '' || view === 'local') { wsNextTry = 0; connect(); }   /* 다른 앱에서 돌아옴 = 접속 */
   });
+
+  /* 2026-11-26(사용자 결정 — 마지막으로 접속하거나 가져온 쪽이 제어권) — 웹이 "접속"하면(새로 열기·새로 고침, 로그인, 다른 앱에서
+   * 돌아옴) 콘이 넘겨받은 상태여도 바로 웹이 가져옴(api/session/claim — 콘은 어떤 화면이든 잠금 화면). 열려 있는 동안의 주기 조회는
+   * 접속으로 치지 않음 — 콘에서 가져가면 웹은 어떤 화면이든 "제어기에서 사용 중"으로 남음(그래야 콘을 쓸 수 있음) */
+  function connect() {
+    api('api/session/claim', { method: 'POST' })
+      .then(function () { if (view !== 'main') show('main'); poll(); })
+      .catch(function (e) { if (!(e && e.handled)) poll(); });   /* 401이면 api가 로그인 화면으로. 연결 안 됨은 poll이 이유를 보여 줌 */
+  }
 
   $('loginView').addEventListener('submit', function (ev) {
     ev.preventDefault();
@@ -1143,7 +1152,7 @@
         $('pw').type = 'password';
         $('pwEyeSlash').style.display = '';
         show('main');
-        poll();
+        connect();   /* 로그인 = 접속 */
       })
       .catch(function (e) { $('loginMsg').textContent = Wt(e.message === 'locked' ? 'LOGIN_LOCKED' : e.message === 'nopin' ? 'NOPIN' : 'LOGIN_FAILED'); });
   });
@@ -1157,7 +1166,7 @@
   });
 
   $('reclaimBtn').addEventListener('click', function () {
-    api('api/session/claim', { method: 'POST' }).then(function () { show('main'); poll(); }).catch(function () {});
+    connect();
   });
 
   $('setBtn').addEventListener('click', function () { if (view === 'main') openSettings(); });
@@ -3118,7 +3127,7 @@
 
   applyTexts();
   if (REMOTE) { show('main'); rmStage('RM_CONNECTING'); }   /* 원격 — 열자마자 판넬 틀과 연결 단계 */
-  poll();
+  connect();   /* 새로 열기·새로 고침 = 접속 */
   setTimeout(fixZoom, 500);
 })();
 </script>
